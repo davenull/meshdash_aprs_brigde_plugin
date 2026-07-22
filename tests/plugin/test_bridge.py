@@ -28,7 +28,6 @@ def _make_config(**overrides):
         digi_path=("WIDE1-1", "WIDE2-1"),
         mesh_channel_index=0,
         registry_db_path=":memory:",
-        allowed_mesh_channels=(),
     )
     defaults.update(overrides)
     return BridgeConfig(**defaults)

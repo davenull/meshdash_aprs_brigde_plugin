@@ -76,25 +76,6 @@ def test_valid_minimal_config_applies_defaults(tmp_path):
     assert cfg.digi_path == ("WIDE1-1", "WIDE2-1")
     assert cfg.mesh_channel_index == 0
     assert cfg.registry_db_path == str(tmp_path / "registrations.db")
-    assert cfg.allowed_mesh_channels == ()  # mesh->RF gating off by default
-
-
-def test_allowed_mesh_channels_defaults_to_empty_not_the_default_channel(tmp_path):
-    # Regression guard: this must never silently default to (0,) or any
-    # other channel, since channel 0 is typically Meshtastic's
-    # AES-encrypted default -- CLAUDE.md's hard invariant is that
-    # encrypted-channel content must never reach RF.
-    path = _write_config(
-        tmp_path,
-        {
-            "tnc_mode": "kiss_tcp",
-            "tnc_host": "127.0.0.1",
-            "tnc_port": 8001,
-            "gateway_callsign": "W4BRD-13",
-        },
-    )
-    cfg = load_config(path)
-    assert cfg.allowed_mesh_channels == ()
 
 
 def test_full_config_overrides_all_defaults(tmp_path):
@@ -110,7 +91,6 @@ def test_full_config_overrides_all_defaults(tmp_path):
             "digi_path": ["WIDE2-2"],
             "mesh_channel_index": 3,
             "registry_db_path": "/tmp/custom_registry.db",
-            "allowed_mesh_channels": [3],
         },
     )
     cfg = load_config(path)
@@ -122,4 +102,3 @@ def test_full_config_overrides_all_defaults(tmp_path):
     assert cfg.digi_path == ("WIDE2-2",)
     assert cfg.mesh_channel_index == 3
     assert cfg.registry_db_path == "/tmp/custom_registry.db"
-    assert cfg.allowed_mesh_channels == (3,)

@@ -22,8 +22,14 @@ class MeshToRfBridge:
     Hard invariants enforced here (see CLAUDE.md):
     - Only a sender with a current registration may reach RF. No
       registration -> no transmission, ever.
-    - Only DMs received on an explicitly allow-listed mesh channel may
-      reach RF (allowed_mesh_channels defaults to empty -- see config.py).
+    - Only genuine direct messages addressed to the gateway node reach
+      this far at all (_handle_packet returns early on anything else) --
+      broadcast/channel content, encrypted-default-channel included, is
+      never inspected for RF-gating purposes. There is deliberately no
+      channel-index check on top of that: confirmed on real hardware that
+      Meshtastic DMs don't carry usable channel-encryption metadata (a DM
+      sent from a non-default channel context was still tagged channel 0),
+      so a channel allowlist can't discriminate anything for DMs.
     - The AX.25 source on every outbound frame is the gateway's own
       callsign; the registered operator's callsign is embedded in the
       message text for attribution ("user callsign in the payload path").
@@ -72,10 +78,9 @@ class MeshToRfBridge:
         if not text:
             return
 
-        channel_index = packet.get("channel", 0)
-        self._handle_dm(from_id, channel_index, text)
+        self._handle_dm(from_id, text)
 
-    def _handle_dm(self, from_id: str, channel_index: int, text: str) -> None:
+    def _handle_dm(self, from_id: str, text: str) -> None:
         # Registration bookkeeping never touches RF and works on any
         # channel -- it's how a node gets onto the allowlist in the first
         # place, so it can't itself require prior registration.
@@ -99,17 +104,12 @@ class MeshToRfBridge:
                 self._reply(from_id, f"Unregistered {removed}.")
             return
 
-        # Everything from here on can reach RF, so both hard invariants apply.
+        # Everything from here on can reach RF, so the registration
+        # invariant applies -- this is the DM path's real (and only
+        # remaining) RF gate.
         sender_callsign = registry.lookup_callsign_for_node(self._registry_conn, from_id)
         if sender_callsign is None:
             self._reply(from_id, "Not registered. DM '!register CALLSIGN-SSID' first.")
-            return
-
-        if channel_index not in self._cfg.allowed_mesh_channels:
-            self._logger.info(
-                "aprs_bridge: dropping mesh->RF request from %s on non-allow-listed channel %s",
-                sender_callsign, channel_index,
-            )
             return
 
         addressee, message_text = commands.parse_outbound_request(text)

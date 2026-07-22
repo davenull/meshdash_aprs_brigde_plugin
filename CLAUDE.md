@@ -11,7 +11,7 @@ aprstastic (MIT) is the prior-art reference for callsign↔node registration; re
 Hard invariants — never violate, never "improve"
 Legal (FCC Part 97 — these are law, not preferences)
 Only messages from pre-registered, licensed callsigns may be gated to RF APRS. The registration table is the gate. No registration → no RF transmission. Ever.
-Never forward encrypted content to RF. Content from default/encrypted Meshtastic channels does not go to RF APRS under any circumstances.
+Never forward broadcast/channel content to RF. The mesh→RF path only ever reads direct messages addressed to the gateway node (packet toId == our local node ID) — broadcast/channel traffic (the default AES-encrypted LongFast channel included) is never inspected for RF-gating purposes at all, structurally, not via a channel-index allowlist. Confirmed empirically on real hardware: Meshtastic DMs do not carry usable channel-encryption metadata — a DM sent while the sender's active channel was 2 was still logged with channel 0, identical to a DM sent with no non-default channel involved at all. A channel-index check on a DM packet cannot discriminate anything; do not reintroduce one as a compliance gate for the DM path. If a future feature ever bridges broadcast/channel content (not just DMs) to RF, it needs its own explicit, separately-reasoned gate — this invariant does not pre-approve one.
 Every RF transmission must be attributable to a licensed callsign (gateway callsign in the AX.25 source field; user callsign in the payload path).
 Do not add config flags that bypass any of the above. If a feature conflicts with these rules, the feature loses.
 MeshDash plugin rules (violations destabilize the whole dashboard)
@@ -37,7 +37,7 @@ Python 3.9+ compatible (MeshDash's floor). Type hints everywhere.
 No new runtime deps beyond: kiss3, ax253, aprs3 (and pyham_pe only if AGW support is being implemented). Ask before adding anything else.
 Every protocol encode/decode function gets unit tests against known-good hex frames before it's used anywhere.
 Log via the injected context["logger"], prefixed with the plugin id.
-Config in config.json (TNC mode/host/port, gateway callsign-SSID, digi path default WIDE1-1,WIDE2-1, allowed channels, rate limits, region profile, APRS-IS toggle). Validate on load; fail loud with a clear log message and disable the bridge rather than running half-configured.
+Config in config.json (TNC mode/host/port, gateway callsign-SSID, digi path default WIDE1-1,WIDE2-1, rate limits, region profile, APRS-IS toggle). Validate on load; fail loud with a clear log message and disable the bridge rather than running half-configured. (No "allowed channels" field — see the mesh→RF hard invariant above on why a channel-index gate doesn't work for DMs.)
 Testing
 pytest for everything. Protocol layers (KISS framing, AX.25 encode/decode, APRS message parse/build, dedupe, rate limiter) must be testable with zero hardware and zero MeshDash — pure functions plus a mock KISS TCP server fixture.
 MeshDash context objects (connection_manager, meshtastic_data, watchdog) get lightweight fakes in tests/conftest.py.

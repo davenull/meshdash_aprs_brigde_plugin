@@ -30,7 +30,6 @@ def _make_config(**overrides):
         digi_path=("WIDE1-1", "WIDE2-1"),
         mesh_channel_index=0,
         registry_db_path=":memory:",
-        allowed_mesh_channels=(2,),
     )
     defaults.update(overrides)
     return BridgeConfig(**defaults)
@@ -59,7 +58,11 @@ def _make_bridge(tmp_path, fake_connection_manager, running_event_loop, **cfg_ov
     return bridge, conn, sent_rf_frames
 
 
-def _dm_packet(from_id: str, text: str, channel: int = 2, to_id: str = LOCAL_ID) -> dict:
+def _dm_packet(from_id: str, text: str, channel: int = 0, to_id: str = LOCAL_ID) -> dict:
+    # channel is included because real packets carry it, but the bridge no
+    # longer inspects it for DMs -- confirmed on real hardware that
+    # Meshtastic DMs don't carry usable channel-encryption metadata (see
+    # mesh_bridge.py's docstring and CLAUDE.md), so it can't gate anything.
     return {
         "fromId": from_id,
         "toId": to_id,
@@ -89,9 +92,7 @@ def test_register_command_creates_registration_and_replies(
     assert fake_connection_manager.sent[0]["destinationId"] == "!node0001"
 
 
-def test_register_command_works_on_any_channel(tmp_path, fake_connection_manager, running_event_loop):
-    # allowed_mesh_channels=(2,) in _make_config, but registration must not
-    # be gated by channel -- it's how a node gets onto the allowlist.
+def test_register_command_ignores_channel_field(tmp_path, fake_connection_manager, running_event_loop):
     bridge, conn, _sent = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     bridge.on_mesh_packet(_dm_packet("!node0001", "!register W4BRD-13", channel=7))
     assert registry.lookup_callsign_for_node(conn, "!node0001") == "W4BRD-13"
@@ -141,21 +142,6 @@ def test_unregistered_sender_cannot_reach_rf(tmp_path, fake_connection_manager, 
     assert "Not registered" in fake_connection_manager.sent[0]["text"]
 
 
-def test_registered_sender_on_disallowed_channel_is_dropped(
-    tmp_path, fake_connection_manager, running_event_loop
-):
-    bridge, conn, sent_rf_frames = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
-    registry.add_registration(conn, "W4BRD-13", "!node0001")
-
-    # allowed_mesh_channels=(2,); this DM arrives on channel 0 (the
-    # AES-encrypted default in a typical Meshtastic setup).
-    bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: hello", channel=0))
-
-    time.sleep(0.2)
-    assert sent_rf_frames == []
-    assert fake_connection_manager.sent == []  # silently dropped, no reply
-
-
 def test_registered_sender_with_explicit_addressee_reaches_rf(
     tmp_path, fake_connection_manager, running_event_loop
 ):
@@ -170,6 +156,19 @@ def test_registered_sender_with_explicit_addressee_reaches_rf(
     assert parsed.destination == "APZBRD"
     assert message.addressee == "WU2Z"
     assert message.text == "W4BRD-13: Testing 123"  # user callsign embedded in payload
+
+
+def test_registered_sender_reaches_rf_on_channel_0(tmp_path, fake_connection_manager, running_event_loop):
+    # Regression guard: real Meshtastic DMs are always tagged channel 0
+    # regardless of the sender's active channel context (confirmed on real
+    # hardware). A registered sender's DM must still reach RF -- channel
+    # value must never gate the DM path.
+    bridge, conn, sent_rf_frames = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "W4BRD-13", "!node0001")
+
+    bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: hello", channel=0))
+
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
 
 
 def test_last_correspondent_used_when_no_explicit_addressee(

@@ -7,5 +7,5 @@
     "aprs_tocall": "APZBRD",
     "digi_path": ["WIDE1-1", "WIDE2-1"],
     "mesh_channel_index": 0,
-    "allowed_mesh_channels": []
+    "allowed_mesh_channels": [2]
 }

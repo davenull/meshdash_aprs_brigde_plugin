@@ -1,0 +1,23 @@
+[project]
+name = "aprs-bridge"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "kiss3",
+    "ax253",
+    "aprs3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["plugins"]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["plugins"]

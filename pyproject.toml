@@ -9,7 +9,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+# Pypubsub is a real MeshDash core dependency (already present in its venv,
+# not something our setup.py installs) -- it's a dev-only dependency here,
+# needed so tests can exercise main.py's pub.subscribe wiring for real.
+dev = ["pytest", "Pypubsub"]
 
 [tool.pytest.ini_options]
 pythonpath = ["plugins"]

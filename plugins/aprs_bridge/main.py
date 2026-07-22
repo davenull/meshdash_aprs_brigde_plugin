@@ -84,6 +84,12 @@ def _bootstrap(context: dict) -> None:
         from aprs_bridge import registry
         from aprs_bridge.transport import TncTransport
         from aprs_bridge.bridge import RfToMeshBridge
+        from aprs_bridge.mesh_bridge import MeshToRfBridge
+        # pypubsub is already a MeshDash core dependency (not something we
+        # install ourselves), but it's still third-party, so it's imported
+        # here rather than at module scope like everything else in this
+        # try block.
+        from pubsub import pub
     except Exception:
         logger.exception("aprs_bridge: failed to import plugin modules")
         return
@@ -96,6 +102,7 @@ def _bootstrap(context: dict) -> None:
 
     registry_conn = registry.init_db(cfg.registry_db_path)
     cm = context["connection_manager"]
+    meshtastic_data = context["meshtastic_data"]
     loop = context["event_loop"]
 
     # RfToMeshBridge needs a way to send bytes back out over the TNC, but
@@ -125,9 +132,32 @@ def _bootstrap(context: dict) -> None:
     transport_holder["transport"] = transport
     transport.start()
 
+    mesh_bridge = MeshToRfBridge(
+        cfg=cfg,
+        registry_conn=registry_conn,
+        connection_manager=cm,
+        meshtastic_data=meshtastic_data,
+        event_loop=loop,
+        logger=logger,
+        transport_send=_transport_send,
+    )
+    # Always unsubscribe before subscribing (wrapped in try/except) to
+    # avoid double-registration if init_plugin ever runs again without a
+    # full process restart -- matches the pattern MeshDash's own plugins
+    # (mesh_ping, tcp_proxy) use for the same reason.
+    try:
+        pub.unsubscribe(mesh_bridge.on_mesh_packet, "meshtastic.receive")
+    except Exception:
+        pass
+    try:
+        pub.subscribe(mesh_bridge.on_mesh_packet, "meshtastic.receive")
+    except Exception:
+        logger.exception("aprs_bridge: pub.subscribe(meshtastic.receive) failed")
+
     _state["transport"] = transport
     _state["registry_conn"] = registry_conn
     _state["bridge"] = bridge
+    _state["mesh_bridge"] = mesh_bridge
     logger.info("aprs_bridge: bridge started (TNC %s:%d)", cfg.tnc_host, cfg.tnc_port)
 
 

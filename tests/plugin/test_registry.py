@@ -35,3 +35,43 @@ def test_registrations_persist_across_connections(tmp_path):
 
     conn2 = registry.init_db(db_path)
     assert registry.lookup_node_for_callsign(conn2, "W4BRD-13") == "!aabbccdd"
+
+
+def test_lookup_callsign_for_node(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    assert registry.lookup_callsign_for_node(conn, "!aabbccdd") is None
+    registry.add_registration(conn, "W4BRD-13", "!aabbccdd")
+    assert registry.lookup_callsign_for_node(conn, "!aabbccdd") == "W4BRD-13"
+
+
+def test_add_registration_enforces_one_callsign_per_node(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    registry.add_registration(conn, "W4BRD-13", "!aabbccdd")
+    # Same node re-registers under a different callsign -- the old mapping
+    # must not linger and create an ambiguous reverse lookup.
+    registry.add_registration(conn, "W4BRD-14", "!aabbccdd")
+    assert registry.lookup_callsign_for_node(conn, "!aabbccdd") == "W4BRD-14"
+    assert registry.lookup_node_for_callsign(conn, "W4BRD-13") is None
+    assert registry.lookup_node_for_callsign(conn, "W4BRD-14") == "!aabbccdd"
+
+
+def test_remove_registration_by_node(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    registry.add_registration(conn, "W4BRD-13", "!aabbccdd")
+    removed = registry.remove_registration_by_node(conn, "!aabbccdd")
+    assert removed == "W4BRD-13"
+    assert registry.lookup_node_for_callsign(conn, "W4BRD-13") is None
+
+
+def test_remove_registration_by_node_when_none_exists(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    assert registry.remove_registration_by_node(conn, "!aabbccdd") is None
+
+
+def test_last_correspondent_round_trip(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    assert registry.get_last_correspondent(conn, "W4BRD-13") is None
+    registry.set_last_correspondent(conn, "w4brd-13", "wu2z")
+    assert registry.get_last_correspondent(conn, "W4BRD-13") == "WU2Z"
+    registry.set_last_correspondent(conn, "W4BRD-13", "N0CALL-10")
+    assert registry.get_last_correspondent(conn, "W4BRD-13") == "N0CALL-10"

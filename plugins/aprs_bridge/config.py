@@ -21,6 +21,7 @@ class BridgeConfig:
     digi_path: Tuple[str, ...]
     mesh_channel_index: int
     registry_db_path: str
+    allowed_mesh_channels: Tuple[int, ...]
 
 
 _REQUIRED_FIELDS = {"tnc_mode", "tnc_host", "tnc_port", "gateway_callsign"}
@@ -68,4 +69,10 @@ def load_config(path: str) -> BridgeConfig:
         digi_path=tuple(raw.get("digi_path", ["WIDE1-1", "WIDE2-1"])),
         mesh_channel_index=int(raw.get("mesh_channel_index", 0)),
         registry_db_path=registry_db_path,
+        # No default here on purpose: Meshtastic's default channel is
+        # AES-encrypted, and CLAUDE.md's hard invariant is that encrypted
+        # content must never reach RF. Mesh->RF gating stays off (empty
+        # allowlist) until the operator explicitly names a vetted,
+        # non-default channel index here.
+        allowed_mesh_channels=tuple(raw.get("allowed_mesh_channels", ())),
     )

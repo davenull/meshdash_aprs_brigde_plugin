@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from types import SimpleNamespace
 
 PLUGIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -54,7 +55,7 @@ def _make_context(tmp_path, connection_manager, event_loop):
     watchdog: dict = {}
     return {
         "connection_manager": connection_manager,
-        "meshtastic_data": None,
+        "meshtastic_data": SimpleNamespace(local_node_id="!local0001"),
         "db_manager": None,
         "node_registry": {},
         "event_loop": event_loop,
@@ -129,3 +130,33 @@ def test_init_plugin_starts_watchdog_heartbeat(fake_connection_manager, running_
             break
         time.sleep(0.02)
     assert found, "watchdog heartbeat coroutine was not scheduled onto the event loop"
+
+
+def test_bootstrap_wires_up_mesh_bridge_and_subscribes_to_pubsub(
+    fake_connection_manager, running_event_loop, tmp_path
+):
+    # Full, real bootstrap (not stubbed): proves the pub.subscribe wiring
+    # added for Phase 3 actually works end-to-end, using pypubsub the same
+    # way MeshDash's own mesh_ping/tcp_proxy plugins do.
+    from pubsub import pub
+
+    module = _load_main_module_isolated(tmp_path)
+    context, _watchdog = _make_context(tmp_path, fake_connection_manager, running_event_loop)
+
+    module.init_plugin(context)
+
+    assert _wait_until(lambda: "mesh_bridge" in module._state, timeout=3)
+    mesh_bridge = module._state["mesh_bridge"]
+    try:
+        assert pub.isSubscribed(mesh_bridge.on_mesh_packet, "meshtastic.receive")
+    finally:
+        pub.unsubscribe(mesh_bridge.on_mesh_packet, "meshtastic.receive")
+
+
+def _wait_until(predicate, timeout=5, interval=0.02):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()

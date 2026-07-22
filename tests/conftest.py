@@ -1,3 +1,4 @@
+import asyncio
 import socket
 import threading
 import time
@@ -105,3 +106,55 @@ def kiss_tcp_server():
         yield server
     finally:
         server.stop()
+
+
+class FakeConnectionManager:
+    """Lightweight stand-in for MeshDash's MeshtasticConnectionManager, per
+    CLAUDE.md's testing strategy. is_ready mirrors the real threading.Event
+    API; sendText records calls instead of touching a radio."""
+
+    def __init__(self, ready: bool = True) -> None:
+        self.is_ready = threading.Event()
+        if ready:
+            self.is_ready.set()
+        self.sent: List[dict] = []
+        self.raise_on_send: BaseException = None
+
+    async def sendText(self, text, destinationId, channelIndex=0, wantAck=False):
+        if self.raise_on_send is not None:
+            raise self.raise_on_send
+        self.sent.append(
+            {
+                "text": text,
+                "destinationId": destinationId,
+                "channelIndex": channelIndex,
+                "wantAck": wantAck,
+            }
+        )
+
+
+@pytest.fixture
+def fake_connection_manager():
+    return FakeConnectionManager()
+
+
+@pytest.fixture
+def running_event_loop():
+    """A real asyncio event loop running in a background thread, so code
+    under test can genuinely use asyncio.run_coroutine_threadsafe(coro,
+    loop) the same way the plugin does against MeshDash's uvicorn loop."""
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        yield loop
+    finally:
+        def _cancel_all_tasks():
+            for task in asyncio.all_tasks(loop=loop):
+                task.cancel()
+
+        loop.call_soon_threadsafe(_cancel_all_tasks)
+        time.sleep(0.05)  # let cancellation callbacks run before stopping the loop
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()

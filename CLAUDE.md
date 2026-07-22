@@ -16,7 +16,7 @@ Every RF transmission must be attributable to a licensed callsign (gateway calls
 Do not add config flags that bypass any of the above. If a feature conflicts with these rules, the feature loses.
 MeshDash plugin rules (violations destabilize the whole dashboard)
 Never open a Meshtastic interface directly (meshtastic.SerialInterface, TCPInterface, etc.). MeshDash owns the radio connection.
-Never call pub.subscribe. Read incoming packets via the injected meshtastic_data, the shared DB, or MeshDash's SSE packet events.
+pub.subscribe(callback, "meshtastic.receive") is allowed for real-time RX — confirmed as the pattern MeshDash's own plugins (mesh_ping, tcp_proxy) use in production. Always pub.unsubscribe(callback, "meshtastic.receive") first (wrapped in try/except) before subscribing, to avoid double-registration on plugin reload. This does NOT relax the "never open a second interface" rule above — pub/sub is just an in-process listener on the one connection MeshDash already owns, not a second connection. meshtastic_data/DB/SSE remain valid alternatives for non-real-time reads.
 Transmit only via await connection_manager.sendText(...), and only after checking connection_manager.is_ready.is_set().
 Plugin structure: manifest.json (with "watchdog": true) + main.py exposing init_plugin(context) and optionally plugin_router (FastAPI APIRouter).
 Background threads: start them inside init_plugin, daemon=True. Heartbeat context["plugin_watchdog"][plugin_id] = time.time() at least every 120 s.

@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .mypy_cache/
+
+# Plugin runtime state (setup.py sentinel, registration DB) -- not source.
+plugins/aprs_bridge/.setup_complete
+plugins/aprs_bridge/registrations.db

@@ -1,0 +1,10 @@
+{
+    "tnc_mode": "kiss_tcp",
+    "tnc_host": "192.168.2.39",
+    "tnc_port": 8001,
+    "kiss_port": 0,
+    "gateway_callsign": "W4BRD-13",
+    "aprs_tocall": "APZBRD",
+    "digi_path": ["WIDE1-1", "WIDE2-1"],
+    "mesh_channel_index": 0
+}

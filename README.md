@@ -96,7 +96,7 @@ Configuration can also be viewed and edited from the web UI's Config tab; change
   ```
   WU2Z: hello from the mesh
   ```
-- **Reply to whoever you last messaged**, by just sending text with no `CALLSIGN:` prefix.
+- **Reply to whoever you last messaged**, by just sending text with no `CALLSIGN:` prefix — this works even the very first time an RF station messages you, since receiving a message also sets who you last talked to, not just sending one.
 
 Unregistered nodes can do all of the above except receive messages addressed specifically to a callsign — an RF sender can still reach them directly by mesh short name or node-id code (see below), or by simply replying to a message they sent.
 

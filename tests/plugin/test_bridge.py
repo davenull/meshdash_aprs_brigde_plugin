@@ -169,6 +169,38 @@ def test_message_to_registered_callsign_is_delivered_to_mesh(
     assert sent["channelIndex"] == 0
 
 
+def test_delivery_sets_last_correspondent_for_registered_recipient(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # So the mesh recipient's very first reply, with no "CALLSIGN:"
+    # prefix, can go straight back to whoever just messaged them.
+    bridge, conn, _, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    frame = _build_rf_frame("WU2Z", "Testing", msgno="003", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert registry.get_last_correspondent(conn, "WU2Z") == "N0CALL-10"
+
+
+def test_delivery_sets_last_correspondent_for_unregistered_recipient(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # An unregistered node has no callsign, so it's keyed by node id --
+    # mesh_bridge.py's identity_key computation for such a sender.
+    bridge, conn, _, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!aabbccdd": {"user": {"shortName": "PGR"}}},
+    )
+
+    frame = _build_rf_frame("PGR", "hello there", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert registry.get_last_correspondent(conn, "!aabbccdd") == "N0CALL-10"
+
+
 def test_message_to_unregistered_callsign_is_dropped(
     tmp_path, fake_connection_manager, running_event_loop
 ):

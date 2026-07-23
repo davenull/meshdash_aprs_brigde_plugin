@@ -241,6 +241,16 @@ class RfToMeshBridge:
         # fans out to every device registered under that callsign.
         for node_id in node_ids:
             asyncio.run_coroutine_threadsafe(self._deliver(node_id, mesh_text), self._loop)
+            # Record frame.source as this recipient's last correspondent
+            # (keyed the same way mesh_bridge.py computes identity_key --
+            # registered callsign if any, else the node id) so a bare-
+            # text reply from them, with no "CALLSIGN:" prefix, goes
+            # straight back to whoever just messaged them. Without this,
+            # a mesh node's very first reply to an RF message would fail
+            # ("No recipient given and no prior correspondent") even
+            # though we just told them exactly who's messaging them.
+            recipient_identity = registry.lookup_callsign_for_node(self._registry_conn, node_id) or node_id
+            registry.set_last_correspondent(self._registry_conn, recipient_identity, frame.source)
 
         if message.msgno is not None:
             self._send_ack(frame.source, message.msgno)

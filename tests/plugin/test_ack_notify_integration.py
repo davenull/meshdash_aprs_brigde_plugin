@@ -211,3 +211,36 @@ def test_unregistered_sender_receives_reply_via_conversation_tracking(
     delivered = fake_connection_manager.sent[0]
     assert delivered["destinationId"] == SENDER_NODE
     assert delivered["text"] == "WU2Z: hi there"
+
+
+def test_mesh_node_can_reply_bare_to_first_contact_from_rf(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # An RF station messages a registered mesh node first (mesh node has
+    # never sent anything yet, so it has no last_correspondent of its
+    # own on record). Its reply, with no "CALLSIGN:" prefix, must still
+    # reach WU2Z -- delivery itself has to seed last_correspondent, not
+    # just outbound sends.
+    notify_calls = []
+    rf_to_mesh, mesh_to_rf, conn, sent_rf_frames, _ack_tracker = _make_wired_bridges(
+        tmp_path, fake_connection_manager, running_event_loop, notify_calls
+    )
+    registry.add_registration(conn, "W4BRD-13", SENDER_NODE)
+
+    inbound_info = aprs_message.encode_message("W4BRD-13", "hello from RF", msgno="500")
+    inbound_frame = ax25.build_ui_frame("APZ019", "WU2Z", ["WIDE1-1", "WIDE2-1"], inbound_info)
+    rf_to_mesh.on_ax25_frame(inbound_frame)
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert fake_connection_manager.sent[0]["destinationId"] == SENDER_NODE
+    # The inbound message carried a msgno, so it already got an RF ack --
+    # sent_rf_frames has that ack in it before the reply we care about.
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+
+    mesh_to_rf.on_mesh_packet(_dm_packet(SENDER_NODE, "hi back, no callsign needed"))
+    assert _wait_until(lambda: len(sent_rf_frames) == 2)
+
+    _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[-1])
+    outbound = ax25.parse_ui_frame(ax25_bytes)
+    outbound_msg = aprs_message.decode_message(outbound.info)
+    assert outbound_msg.addressee == "WU2Z"
+    assert outbound_msg.text == "0001: hi back, no callsign needed"

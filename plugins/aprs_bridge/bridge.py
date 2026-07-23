@@ -81,7 +81,15 @@ class RfToMeshBridge:
                         "aprs_bridge: ack %s from %s for unknown/already-cleared message",
                         acked_msgno, frame.source,
                     )
-            return
+                return
+            # Not an ack: the gateway_callsign happens to also be a
+            # registered mesh user's callsign (nothing stops that -- the
+            # gateway is transmitted-as/attributed-to a licensed
+            # callsign, and a registered user's callsign is a separate,
+            # independent mapping that can coincide with it). Fall
+            # through to the normal registered-callsign delivery path
+            # below instead of silently dropping a real message just
+            # because its addressee string matches our own.
 
         node_id = registry.lookup_node_for_callsign(self._registry_conn, message.addressee)
         if node_id is None:

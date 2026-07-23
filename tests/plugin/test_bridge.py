@@ -326,6 +326,30 @@ def test_ack_addressed_to_gateway_clears_ack_tracker(
     assert fake_connection_manager.sent == []
 
 
+def test_message_addressed_to_gateway_callsign_still_delivers_if_registered(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # Regression guard: nothing stops an operator from registering their
+    # own mesh node under the same callsign as the gateway itself (real
+    # setup we hit live). A genuine, non-ack message addressed to that
+    # callsign must still be delivered to mesh -- it must not be
+    # silently swallowed just because message.addressee happens to equal
+    # cfg.gateway_callsign.
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop
+    )
+    registry.add_registration(conn, "W4BRD-13", "!aabbccdd")  # same callsign as gateway_callsign
+
+    frame = _build_rf_frame("W4BRD-13", "Testing", msgno="003", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    sent = fake_connection_manager.sent[0]
+    assert sent["destinationId"] == "!aabbccdd"
+    assert sent["text"] == "Testing"
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)  # still gets a normal ack
+
+
 def test_ack_for_unknown_msgno_does_not_raise_or_deliver(
     tmp_path, fake_connection_manager, running_event_loop
 ):

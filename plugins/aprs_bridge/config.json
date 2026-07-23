@@ -1,7 +1,7 @@
 {
     "tnc_mode": "kiss_tcp",
-    "tnc_host": "192.168.2.39",
-    "tnc_port": 8001,
+    "tnc_host": "192.168.2.55",
+    "tnc_port": 8100,
     "kiss_port": 0,
     "gateway_callsign": "W4BRD-13",
     "aprs_tocall": "APZBRD",

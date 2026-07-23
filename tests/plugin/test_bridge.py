@@ -312,7 +312,7 @@ def test_ack_addressed_to_gateway_clears_ack_tracker(
     tmp_path, fake_connection_manager, running_event_loop
 ):
     bridge, conn, _sent, ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
-    ack_tracker.track("005", "WU2Z", b"some-kiss-frame-bytes")
+    ack_tracker.track("005", "WU2Z", b"some-kiss-frame-bytes", "!node0001")
     assert ack_tracker.pending_count() == 1
 
     ack_info = aprs_message.build_ack("W4BRD-13", "005")

@@ -141,11 +141,38 @@ def _bootstrap(context: dict) -> None:
     # sides consume distinct shared resources (mesh channel load vs RF
     # airtime) even though the configured numeric limits are the same.
     dedupe = DedupeCache(ttl_seconds=cfg.dedupe_ttl_sec)
+
+    def _notify_mesh_sender(node_id: str, text: str) -> None:
+        async def _send() -> None:
+            if not cm.is_ready.is_set():
+                logger.warning(
+                    "aprs_bridge: connection_manager not ready; dropping ack notification to %s", node_id
+                )
+                return
+            try:
+                await cm.sendText(text, destinationId=node_id, channelIndex=cfg.mesh_channel_index)
+            except Exception:
+                logger.exception("aprs_bridge: ack notification sendText to %s failed", node_id)
+
+        asyncio.run_coroutine_threadsafe(_send(), loop)
+
+    def _on_acked(msgno: str, addressee: str, node_id: str) -> None:
+        _notify_mesh_sender(node_id, f"{addressee} acked your message.")
+
+    def _on_exhausted(msgno: str, addressee: str, node_id: str) -> None:
+        _notify_mesh_sender(
+            node_id,
+            f"No ack from {addressee} after {cfg.ack_max_attempts} tries; "
+            "message may not have been received.",
+        )
+
     ack_tracker = AckTracker(
         transport_send=_transport_send,
         logger=logger,
         retry_intervals=cfg.ack_retry_intervals_sec,
         max_attempts=cfg.ack_max_attempts,
+        on_acked=_on_acked,
+        on_exhausted=_on_exhausted,
     )
     msgno_generator = MsgnoGenerator()
     rf_to_mesh_limiter = RateLimiter(

@@ -150,10 +150,10 @@ class MeshToRfBridge:
             )
             return
 
-        self._send_to_rf(sender_callsign, addressee, message_text)
+        self._send_to_rf(from_id, sender_callsign, addressee, message_text)
         registry.set_last_correspondent(self._registry_conn, sender_callsign, addressee)
 
-    def _send_to_rf(self, sender_callsign: str, addressee: str, message_text: str) -> None:
+    def _send_to_rf(self, from_id: str, sender_callsign: str, addressee: str, message_text: str) -> None:
         msgno = self._msgno_generator.next()
         prefix = f"{sender_callsign}: "
         # Reserve room for the trailing "{msgno" (1 + up to 5 chars) the
@@ -184,7 +184,7 @@ class MeshToRfBridge:
                 "aprs_bridge: mesh->RF %s -> %s (msg %s): %r",
                 sender_callsign, addressee, msgno, message_text,
             )
-            self._ack_tracker.track(msgno, addressee, kiss_frame)
+            self._ack_tracker.track(msgno, addressee, kiss_frame, from_id)
             # Mark our own transmission's signature so a TNC echo /
             # digipeat loopback is recognized as self-originated on RX,
             # not re-processed (and not double-counted against the

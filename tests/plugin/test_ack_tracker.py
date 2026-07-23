@@ -2,6 +2,8 @@ import logging
 
 from aprs_bridge.ack_tracker import AckTracker, MsgnoGenerator
 
+NODE = "!node0001"
+
 
 class FakeClock:
     def __init__(self, start: float = 0.0) -> None:
@@ -26,7 +28,14 @@ class TestMsgnoGenerator:
         assert gen.next() == "001"
 
 
-def _tracker(clock, sent_frames=None, retry_intervals=(30.0, 60.0, 120.0), max_attempts=4):
+def _tracker(
+    clock,
+    sent_frames=None,
+    retry_intervals=(30.0, 60.0, 120.0),
+    max_attempts=4,
+    on_acked=None,
+    on_exhausted=None,
+):
     sent_frames = sent_frames if sent_frames is not None else []
 
     def transport_send(data: bytes) -> bool:
@@ -39,13 +48,15 @@ def _tracker(clock, sent_frames=None, retry_intervals=(30.0, 60.0, 120.0), max_a
         retry_intervals=retry_intervals,
         max_attempts=max_attempts,
         clock=clock,
+        on_acked=on_acked,
+        on_exhausted=on_exhausted,
     ), sent_frames
 
 
 def test_ack_clears_pending_and_returns_true():
     clock = FakeClock()
     tracker, _sent = _tracker(clock)
-    tracker.track("001", "WU2Z", b"frame-bytes")
+    tracker.track("001", "WU2Z", b"frame-bytes", NODE)
     assert tracker.pending_count() == 1
     assert tracker.ack("001") is True
     assert tracker.pending_count() == 0
@@ -57,10 +68,36 @@ def test_ack_for_unknown_msgno_returns_false():
     assert tracker.ack("999") is False
 
 
+def test_ack_invokes_on_acked_callback_with_addressee_and_node_id():
+    clock = FakeClock()
+    calls = []
+    tracker, _sent = _tracker(clock, on_acked=lambda msgno, addressee, node_id: calls.append((msgno, addressee, node_id)))
+    tracker.track("001", "WU2Z", b"frame", NODE)
+    tracker.ack("001")
+    assert calls == [("001", "WU2Z", NODE)]
+
+
+def test_ack_for_unknown_msgno_does_not_invoke_on_acked():
+    clock = FakeClock()
+    calls = []
+    tracker, _sent = _tracker(clock, on_acked=lambda *a: calls.append(a))
+    tracker.ack("999")
+    assert calls == []
+
+
+def test_on_acked_callback_exception_does_not_propagate():
+    clock = FakeClock()
+    def _raise(*_a):
+        raise RuntimeError("boom")
+    tracker, _sent = _tracker(clock, on_acked=_raise)
+    tracker.track("001", "WU2Z", b"frame", NODE)
+    assert tracker.ack("001") is True  # must not raise
+
+
 def test_poll_before_first_interval_does_not_retransmit():
     clock = FakeClock()
     tracker, sent = _tracker(clock)
-    tracker.track("001", "WU2Z", b"frame")
+    tracker.track("001", "WU2Z", b"frame", NODE)
     clock.advance(29)
     tracker.poll()
     assert sent == []
@@ -69,7 +106,7 @@ def test_poll_before_first_interval_does_not_retransmit():
 def test_poll_retransmits_after_first_interval():
     clock = FakeClock()
     tracker, sent = _tracker(clock)
-    tracker.track("001", "WU2Z", b"frame")
+    tracker.track("001", "WU2Z", b"frame", NODE)
     clock.advance(30)
     tracker.poll()
     assert sent == [b"frame"]
@@ -78,7 +115,7 @@ def test_poll_retransmits_after_first_interval():
 def test_retransmit_schedule_is_decaying():
     clock = FakeClock()
     tracker, sent = _tracker(clock, retry_intervals=(30.0, 60.0, 120.0), max_attempts=10)
-    tracker.track("001", "WU2Z", b"frame")
+    tracker.track("001", "WU2Z", b"frame", NODE)
 
     clock.advance(30)
     tracker.poll()
@@ -100,7 +137,7 @@ def test_retransmit_schedule_is_decaying():
 def test_gives_up_after_max_attempts():
     clock = FakeClock()
     tracker, sent = _tracker(clock, retry_intervals=(10.0,), max_attempts=3)
-    tracker.track("001", "WU2Z", b"frame")  # attempt 1 (the initial send via track, not poll)
+    tracker.track("001", "WU2Z", b"frame", NODE)  # attempt 1 (the initial send via track, not poll)
 
     clock.advance(10)
     tracker.poll()  # attempt 2
@@ -118,10 +155,44 @@ def test_gives_up_after_max_attempts():
     assert tracker.pending_count() == 0
 
 
+def test_exhaustion_invokes_on_exhausted_callback():
+    clock = FakeClock()
+    calls = []
+    tracker, _sent = _tracker(
+        clock,
+        retry_intervals=(10.0,),
+        max_attempts=3,
+        on_exhausted=lambda msgno, addressee, node_id: calls.append((msgno, addressee, node_id)),
+    )
+    tracker.track("001", "WU2Z", b"frame", NODE)
+
+    clock.advance(10)
+    tracker.poll()
+    assert calls == []  # not exhausted yet
+
+    clock.advance(10)
+    tracker.poll()
+    assert calls == []  # not exhausted yet
+
+    clock.advance(10)
+    tracker.poll()
+    assert calls == [("001", "WU2Z", NODE)]
+
+
+def test_on_exhausted_callback_exception_does_not_propagate():
+    clock = FakeClock()
+    def _raise(*_a):
+        raise RuntimeError("boom")
+    tracker, _sent = _tracker(clock, retry_intervals=(10.0,), max_attempts=1, on_exhausted=_raise)
+    tracker.track("001", "WU2Z", b"frame", NODE)
+    clock.advance(10)
+    tracker.poll()  # must not raise
+
+
 def test_ack_stops_further_retransmission():
     clock = FakeClock()
     tracker, sent = _tracker(clock, retry_intervals=(10.0,), max_attempts=5)
-    tracker.track("001", "WU2Z", b"frame")
+    tracker.track("001", "WU2Z", b"frame", NODE)
 
     clock.advance(10)
     tracker.poll()
@@ -137,8 +208,8 @@ def test_ack_stops_further_retransmission():
 def test_multiple_pending_messages_tracked_independently():
     clock = FakeClock()
     tracker, sent = _tracker(clock, retry_intervals=(10.0,), max_attempts=5)
-    tracker.track("001", "WU2Z", b"frame-1")
-    tracker.track("002", "N0CALL", b"frame-2")
+    tracker.track("001", "WU2Z", b"frame-1", NODE)
+    tracker.track("002", "N0CALL", b"frame-2", "!node0002")
 
     tracker.ack("001")
 

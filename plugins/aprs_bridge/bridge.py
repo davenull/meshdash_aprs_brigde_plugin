@@ -6,6 +6,7 @@ import sqlite3
 from typing import Callable, List, Optional
 
 from .ack_tracker import AckTracker
+from . import commands
 from .config import BridgeConfig
 from .protocol import ax25, aprs_message, kiss
 from .protocol.dedupe import DedupeCache
@@ -34,7 +35,13 @@ class RfToMeshBridge:
        delivery goes only to whichever sent mesh->RF under that callsign
        most recently (registry.last_active_node) -- falling back to
        every device if none has ever sent, or the last-active one was
-       since unregistered.
+       since unregistered. A sender can force delivery to every
+       registered device regardless, by starting the message text with
+       "!ALL" (commands.parse_broadcast_prefix strips it before
+       delivery) -- e.g. to check in with everyone at once. Whichever
+       device replies afterward becomes the new last-active one, since
+       mesh_bridge.py records that on every registered send, so routing
+       narrows back down on its own without any extra bookkeeping here.
     3. Addressed to something matching a live mesh node's short name, or
        the last 4 hex chars of its node id (the same fallback code shown
        as attribution when a node has no name -- see
@@ -128,6 +135,14 @@ class RfToMeshBridge:
             self._logger.debug("aprs_bridge: malformed APRS message from %s: %s", frame.source, exc)
             return
 
+        # A leading "!ALL" forces delivery to every device registered
+        # under the addressed callsign, overriding the last-active-device
+        # narrowing below -- e.g. to check in with everyone at once.
+        # Whichever device replies afterward becomes the new last-active
+        # one for that callsign (mesh_bridge.py already records this on
+        # every registered send), so routing narrows back down on its own.
+        is_broadcast, delivery_text = commands.parse_broadcast_prefix(message.text)
+
         node_ids: List[str] = []
 
         if message.addressee == self._cfg.gateway_callsign:
@@ -162,14 +177,15 @@ class RfToMeshBridge:
 
         if not node_ids:
             node_ids = registry.lookup_nodes_for_callsign(self._registry_conn, message.addressee)
-            if len(node_ids) > 1:
+            if len(node_ids) > 1 and not is_broadcast:
                 # A callsign with several registered devices: route to
                 # just the one that most recently sent mesh->RF under
                 # this callsign, rather than fanning out to every device.
                 # Falls back to fan-out if we've never seen an outbound
                 # send from this callsign yet (registered-but-silent
                 # devices), or if the last-active device has since been
-                # unregistered.
+                # unregistered -- or if the sender explicitly requested
+                # "!ALL" (checked above).
                 last_active = registry.get_last_active_node(self._registry_conn, message.addressee)
                 if last_active in node_ids:
                     node_ids = [last_active]
@@ -233,8 +249,10 @@ class RfToMeshBridge:
         # Prefix with the RF sender's callsign (mirrors the mesh->RF
         # "CALLSIGN: text" / "via <name>: text" attribution) so the mesh
         # recipient can see who's messaging them -- without it there's no
-        # way to tell one RF correspondent from another.
-        mesh_text = f"{frame.source}: {message.text}"
+        # way to tell one RF correspondent from another. delivery_text
+        # has any leading "!ALL" already stripped, so recipients see only
+        # the actual message.
+        mesh_text = f"{frame.source}: {delivery_text}"
         # A callsign may have several registered devices (e.g. an
         # operator running more than one mesh node); one incoming RF
         # message counts as one rate-limited/acked event regardless, and

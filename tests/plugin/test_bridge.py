@@ -134,6 +134,39 @@ def test_message_routed_only_to_last_active_device_when_multiple_registered(
     assert fake_connection_manager.sent[0]["destinationId"] == "!22222222"
 
 
+def test_all_prefix_overrides_last_active_and_reaches_every_device(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "W4BRD-13", "!11111111")
+    registry.add_registration(conn, "W4BRD-13", "!22222222")
+    registry.set_last_active_node(conn, "W4BRD-13", "!22222222")
+
+    frame = _build_rf_frame("W4BRD-13", "!ALL check in", msgno="003")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 2)
+    destinations = {s["destinationId"] for s in fake_connection_manager.sent}
+    assert destinations == {"!11111111", "!22222222"}
+    # The "!ALL" marker itself is stripped before delivery.
+    assert all(s["text"] == "N0CALL-10: check in" for s in fake_connection_manager.sent)
+
+
+def test_all_prefix_is_a_no_op_for_a_single_registered_device(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    frame = _build_rf_frame("WU2Z", "!ALL hello", msgno="003")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    sent = fake_connection_manager.sent[0]
+    assert sent["destinationId"] == "!aabbccdd"
+    assert sent["text"] == "N0CALL-10: hello"
+
+
 def test_message_falls_back_to_fan_out_when_last_active_device_unregistered(
     tmp_path, fake_connection_manager, running_event_loop
 ):

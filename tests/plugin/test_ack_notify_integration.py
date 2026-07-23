@@ -244,3 +244,39 @@ def test_mesh_node_can_reply_bare_to_first_contact_from_rf(
     outbound_msg = aprs_message.decode_message(outbound.info)
     assert outbound_msg.addressee == "WU2Z"
     assert outbound_msg.text == "0001: hi back, no callsign needed"
+
+
+def test_all_broadcast_then_reply_narrows_routing_to_the_replying_device(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # "!ALL" reaches every device registered to a callsign; whichever one
+    # replies afterward should become the one further RF messages to that
+    # callsign route to, without needing any extra "!ALL"-specific
+    # bookkeeping -- mesh_bridge.py already records last_active_node on
+    # every registered send, so this should fall out of existing logic.
+    notify_calls = []
+    rf_to_mesh, mesh_to_rf, conn, sent_rf_frames, _ack_tracker = _make_wired_bridges(
+        tmp_path, fake_connection_manager, running_event_loop, notify_calls
+    )
+    node_a, node_b = "!nodeaaaa", "!nodebbbb"
+    registry.add_registration(conn, "W4BRD-13", node_a)
+    registry.add_registration(conn, "W4BRD-13", node_b)
+
+    broadcast_info = aprs_message.encode_message("W4BRD-13", "!ALL check in", msgno="700")
+    broadcast_frame = ax25.build_ui_frame("APZ019", "WU2Z", ["WIDE1-1", "WIDE2-1"], broadcast_info)
+    rf_to_mesh.on_ax25_frame(broadcast_frame)
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 2)
+    assert {s["destinationId"] for s in fake_connection_manager.sent} == {node_a, node_b}
+
+    # node_b is the one that replies.
+    mesh_to_rf.on_mesh_packet(_dm_packet(node_b, "here"))
+    assert _wait_until(lambda: len(sent_rf_frames) == 2)  # ack of the broadcast + this reply
+
+    # A follow-up RF message to the callsign, with no "!ALL", now goes
+    # only to node_b -- not fanned out again.
+    followup_info = aprs_message.encode_message("W4BRD-13", "good, thanks", msgno="701")
+    followup_frame = ax25.build_ui_frame("APZ019", "WU2Z", ["WIDE1-1", "WIDE2-1"], followup_info)
+    rf_to_mesh.on_ax25_frame(followup_frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 3)
+    assert fake_connection_manager.sent[-1]["destinationId"] == node_b

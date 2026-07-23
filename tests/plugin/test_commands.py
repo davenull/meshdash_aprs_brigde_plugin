@@ -69,3 +69,27 @@ def test_parse_outbound_request_colon_but_not_a_callsign_falls_back():
     addressee, text = commands.parse_outbound_request("note to self: buy milk")
     assert addressee is None
     assert text == "note to self: buy milk"
+
+
+def test_parse_broadcast_prefix_detects_and_strips_all():
+    is_broadcast, text = commands.parse_broadcast_prefix("!ALL check in everyone")
+    assert is_broadcast is True
+    assert text == "check in everyone"
+
+
+def test_parse_broadcast_prefix_is_case_insensitive():
+    is_broadcast, text = commands.parse_broadcast_prefix("!all check in everyone")
+    assert is_broadcast is True
+    assert text == "check in everyone"
+
+
+def test_parse_broadcast_prefix_absent_leaves_text_unchanged():
+    is_broadcast, text = commands.parse_broadcast_prefix("just a normal message")
+    assert is_broadcast is False
+    assert text == "just a normal message"
+
+
+def test_parse_broadcast_prefix_with_no_remaining_text():
+    is_broadcast, text = commands.parse_broadcast_prefix("!ALL")
+    assert is_broadcast is True
+    assert text == ""

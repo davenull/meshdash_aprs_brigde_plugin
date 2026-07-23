@@ -102,7 +102,7 @@ Unregistered nodes can do all of the above except receive messages addressed spe
 
 ### From the RF side
 
-- Send a normal APRS message addressed to a registered callsign, and it's delivered to every Meshtastic device registered under that callsign (or the single most-recently-active one, if there are several).
+- Send a normal APRS message addressed to a registered callsign, and it's delivered to the Meshtastic device registered under that callsign — if there's more than one, only to whichever sent a message most recently (falling back to every device if none has yet). Start the message with `!ALL` (e.g. `!ALL check in`) to force delivery to every registered device regardless; whichever one replies afterward becomes the new most-recently-active device, so routing narrows back to just them automatically.
 - Send a message addressed to a live mesh node's short name, or to the last 4 hex characters of its node id (e.g. a node `!a1b2c3d4` is reachable as `C3D4`), to reach an unregistered node directly. The node-id code is the more reliable option — a Meshtastic short name can be arbitrary unicode or unset, but the code is always ASCII, always present, and it's the same code you'll see as the sender's name on a message from a node that has no short/long name configured.
 - Reply to a message you received from the gateway, and it's routed back to whichever mesh device the conversation belongs to — this works even if that device was never registered.
 

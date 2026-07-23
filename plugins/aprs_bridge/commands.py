@@ -13,6 +13,11 @@ _CALLSIGN_RE = re.compile(r"^[A-Z0-9]{3,7}(-(?:[0-9]|1[0-5]))?$")
 _REGISTER_RE = re.compile(r"^!register\b(.*)$", re.IGNORECASE)
 _UNREGISTER_RE = re.compile(r"^!unregister\s*$", re.IGNORECASE)
 
+# "!ALL message text" -- an RF sender addressing a callsign with several
+# registered devices can force delivery to every one of them instead of
+# just the most recently active one (see bridge.py's on_ax25_frame).
+_ALL_PREFIX_RE = re.compile(r"^!all\b\s*(.*)$", re.IGNORECASE)
+
 # "CALLSIGN: message text" -- the aprstastic addressing convention. Colon
 # is required; the callsign part is validated with the same syntax check
 # used for registration so "not really a callsign: this is just a message
@@ -53,6 +58,17 @@ def parse_register_command(text: str) -> Optional[str]:
 
 def is_unregister_command(text: str) -> bool:
     return bool(_UNREGISTER_RE.match(text.strip()))
+
+
+def parse_broadcast_prefix(text: str) -> Tuple[bool, str]:
+    """Detects a leading "!ALL" token (case-insensitive) in RF message
+    text. Returns (is_broadcast, remaining_text) -- remaining_text has
+    the marker stripped so mesh recipients see only the actual message,
+    not the raw command."""
+    match = _ALL_PREFIX_RE.match(text.strip())
+    if match is None:
+        return False, text
+    return True, match.group(1).strip()
 
 
 def parse_outbound_request(text: str) -> Tuple[Optional[str], str]:

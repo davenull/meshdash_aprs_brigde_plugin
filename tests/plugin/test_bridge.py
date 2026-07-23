@@ -257,6 +257,10 @@ def test_message_to_registered_callsign_is_delivered_to_mesh(
     assert sent["destinationId"] == "!aabbccdd"
     assert sent["text"] == "N0CALL-10: Testing"
     assert sent["channelIndex"] == 0
+    # Requests Meshtastic's own mesh-level delivery confirmation/retry,
+    # not just our RF-side ack/retry -- a silent single-node delivery
+    # failure was confirmed live with a plain fire-and-forget send.
+    assert sent["wantAck"] is True
 
 
 def test_delivery_sets_last_correspondent_for_registered_recipient(

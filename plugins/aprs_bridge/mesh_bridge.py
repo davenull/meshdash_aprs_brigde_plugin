@@ -15,6 +15,7 @@ from .protocol.errors import ProtocolError
 from .protocol.ratelimit import RateLimiter
 
 _MAX_OUTBOUND_TEXT = 67  # APRS message text limit; enforced again defensively here.
+_MAX_ATTRIBUTION_LEN = 30  # cap on the "name: " prefix so it can't crowd out the message text.
 
 
 class MeshToRfBridge:
@@ -30,13 +31,17 @@ class MeshToRfBridge:
       own licensed callsign, regardless of who originated the mesh-side
       content. That's the sole point of RF transmission accountability,
       unaffected by anything below.
-    - A mesh sender who has !register'd a real callsign gets that
-      callsign embedded as attribution in the outgoing message text
-      ("user callsign in the payload path"), alongside their mesh short
-      name for readability ("CALLSIGN (SHORTNAME): text"). Anyone else
-      is still relayed -- identified instead by their mesh node's short
-      name/ID alone ("via SHORTNAME: text"), never claiming a license
-      they haven't verified.
+    - Registration (!register CALLSIGN-SSID) still gates whether a
+      sender can receive RF replies addressed to that callsign, and
+      still keys their rate-limit bucket and last-correspondent
+      tracking by that callsign rather than their node id. But the
+      message-text attribution itself is always just the mesh long
+      name ("LONGNAME: text", falling back to short name/node id if
+      unset) for every sender, registered or not -- the
+      station-callsign requirement is already met by the AX.25
+      source on the outgoing frame (always the gateway's own licensed
+      callsign, per the point above), so repeating a sender's callsign
+      in the payload isn't needed.
     - Only genuine direct messages addressed to the gateway node reach
       this far at all (_handle_packet returns early on anything else) --
       broadcast/channel content, encrypted-default-channel included, is
@@ -133,30 +138,21 @@ class MeshToRfBridge:
                 self._reply(from_id, f"Unregistered {removed}.")
             return
 
-        # Third-party relay model: a !register'd sender is identified by
-        # their real callsign; anyone else is still relayed, identified
-        # instead by their mesh node's short name (never claiming a
-        # license they haven't verified). Either way identity_key is a
-        # stable per-sender string used for rate-limiting and
-        # last-correspondent tracking -- it doesn't need to be a real
-        # callsign to serve that purpose.
-        #
-        # The registered-sender attribution also includes the mesh short
-        # name alongside the callsign (not just the callsign alone): the
-        # callsign satisfies the legal attribution requirement, but on its
-        # own it's not always useful to the RF recipient -- it can even be
-        # identical to the gateway's own AX.25 source (e.g. during testing
-        # under one callsign), in which case a bare callsign in the text
-        # tells the recipient nothing they didn't already see in the
-        # frame's source field. The short name is what actually says which
-        # mesh node/person sent it.
+        # Third-party relay model: !register'd status still determines
+        # identity_key (the stable per-sender string used for
+        # rate-limiting and last-correspondent tracking -- a registered
+        # sender's real callsign, or their node id otherwise), but the
+        # message-text attribution is always just the mesh long name
+        # (falling back to short name, then node id, if unset -- see
+        # _mesh_long_name). The station callsign requirement is already
+        # satisfied by the AX.25 source on the outgoing frame (always the
+        # gateway's own licensed callsign -- see the class docstring);
+        # repeating a sender's callsign in the payload added nothing a
+        # reader couldn't already see in the frame header, and the long
+        # name is what actually identifies which mesh node/person sent it.
         sender_callsign = registry.lookup_callsign_for_node(self._registry_conn, from_id)
-        if sender_callsign is not None:
-            identity_key = sender_callsign
-            attribution = f"{sender_callsign} ({self._mesh_short_name(from_id)})"
-        else:
-            identity_key = from_id
-            attribution = f"via {self._mesh_short_name(from_id)}"
+        identity_key = sender_callsign if sender_callsign is not None else from_id
+        attribution = self._mesh_long_name(from_id)
 
         if not self._rate_limiter.allow(identity_key):
             self._logger.warning(
@@ -178,19 +174,24 @@ class MeshToRfBridge:
         self._send_to_rf(from_id, attribution, addressee, message_text)
         registry.set_last_correspondent(self._registry_conn, identity_key, addressee)
 
-    def _mesh_short_name(self, node_id: str) -> str:
+    def _mesh_long_name(self, node_id: str) -> str:
         nodes = getattr(self._meshtastic_data, "nodes", {}) or {}
         nd = nodes.get(node_id) or {}
         user = (nd.get("user") or {}) if isinstance(nd, dict) else {}
         return (
-            user.get("shortName")
+            user.get("longName")
+            or nd.get("long_name")
+            or user.get("shortName")
             or nd.get("short_name")
             or (node_id[-4:] if node_id else node_id)
         )
 
     def _send_to_rf(self, from_id: str, attribution: str, addressee: str, message_text: str) -> None:
         msgno = self._msgno_generator.next()
-        prefix = f"{attribution}: "
+        # Meshtastic long names can run up to 40 bytes -- cap the
+        # attribution itself so a long name can never eat the entire
+        # 67-char APRS text budget and leave nothing for the message.
+        prefix = f"{attribution[:_MAX_ATTRIBUTION_LEN]}: "
         # Reserve room for the trailing "{msgno" (1 + up to 5 chars) the
         # same way encode_message will append it, so the combined field
         # never exceeds the 67-char APRS message text limit.

@@ -164,7 +164,7 @@ def test_unregistered_sender_reaches_rf_attributed_by_mesh_name(
     # Third-party relay model (FCC Part 97.115): an unregistered/
     # unlicensed mesh sender can still reach RF -- the gateway's own
     # licensed callsign remains the sole AX.25 source, and the sender is
-    # identified by their mesh short name rather than a claimed callsign.
+    # identified by their mesh long name rather than a claimed callsign.
     bridge, _conn, sent_rf_frames, _ack_tracker = _make_bridge(
         tmp_path, fake_connection_manager, running_event_loop,
         mesh_nodes={"!node0001": {"user": {"longName": "David's Pager", "shortName": "PGR"}}},
@@ -178,7 +178,24 @@ def test_unregistered_sender_reaches_rf_attributed_by_mesh_name(
     assert parsed.source == "W4BRD-13"  # gateway callsign, unchanged
     message = aprs_message.decode_message(parsed.info)
     assert message.addressee == "WU2Z"
-    assert message.text == "via PGR: hello"
+    assert message.text == "David's Pager: hello"
+
+
+def test_unregistered_sender_falls_back_to_short_name_then_node_id(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, _conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!node0001": {"user": {"shortName": "PGR"}}},  # no longName set
+    )
+
+    bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: hello", channel=2))
+
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+    _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
+    parsed = ax25.parse_ui_frame(ax25_bytes)
+    message = aprs_message.decode_message(parsed.info)
+    assert message.text == "PGR: hello"  # falls back to short name
 
 
 def test_unregistered_sender_falls_back_to_node_id_when_unnamed(
@@ -192,15 +209,15 @@ def test_unregistered_sender_falls_back_to_node_id_when_unnamed(
     _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
     parsed = ax25.parse_ui_frame(ax25_bytes)
     message = aprs_message.decode_message(parsed.info)
-    assert message.text == "via 0001: hello"  # last 4 chars of the node id
+    assert message.text == "0001: hello"  # last 4 chars of the node id
 
 
-def test_registered_sender_still_uses_real_callsign_not_mesh_name(
+def test_registered_sender_attributed_by_mesh_name_not_callsign(
     tmp_path, fake_connection_manager, running_event_loop
 ):
     bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(
         tmp_path, fake_connection_manager, running_event_loop,
-        mesh_nodes={"!node0001": {"user": {"shortName": "PGR"}}},
+        mesh_nodes={"!node0001": {"user": {"longName": "David's Pager", "shortName": "PGR"}}},
     )
     registry.add_registration(conn, "W4BRD-13", "!node0001")
 
@@ -210,7 +227,12 @@ def test_registered_sender_still_uses_real_callsign_not_mesh_name(
     _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
     parsed = ax25.parse_ui_frame(ax25_bytes)
     message = aprs_message.decode_message(parsed.info)
-    assert message.text == "W4BRD-13 (PGR): hello"  # real callsign + mesh name, not "via PGR"
+    # Attribution is the mesh name, not the registered callsign -- the
+    # AX.25 source (asserted above as the gateway callsign) already
+    # satisfies station ID; registration still gates rate-limiting/
+    # last-correspondent tracking and RF->mesh delivery, just not the text.
+    assert parsed.source == "W4BRD-13"
+    assert message.text == "David's Pager: hello"
 
 
 def test_registered_sender_with_explicit_addressee_reaches_rf(
@@ -226,7 +248,7 @@ def test_registered_sender_with_explicit_addressee_reaches_rf(
     assert parsed.source == "W4BRD-13"  # gateway callsign, not the mesh user's
     assert parsed.destination == "APZBRD"
     assert message.addressee == "WU2Z"
-    assert message.text == "W4BRD-13 (0001): Testing 123"  # user callsign embedded in payload
+    assert message.text == "0001: Testing 123"  # mesh name attribution, no callsign in payload
 
 
 def test_registered_sender_reaches_rf_on_channel_0(tmp_path, fake_connection_manager, running_event_loop):
@@ -254,7 +276,7 @@ def test_last_correspondent_used_when_no_explicit_addressee(
     assert _wait_until(lambda: len(sent_rf_frames) == 1)
     _parsed, message = _decode_last_rf_frame(sent_rf_frames)
     assert message.addressee == "WU2Z"
-    assert message.text == "W4BRD-13 (0001): just a reply, no callsign prefix"
+    assert message.text == "0001: just a reply, no callsign prefix"
 
 
 def test_no_addressee_and_no_last_correspondent_replies_with_error(

@@ -75,3 +75,26 @@ def test_last_correspondent_round_trip(tmp_path):
     assert registry.get_last_correspondent(conn, "W4BRD-13") == "WU2Z"
     registry.set_last_correspondent(conn, "W4BRD-13", "N0CALL-10")
     assert registry.get_last_correspondent(conn, "W4BRD-13") == "N0CALL-10"
+
+
+def test_list_registrations_empty(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    assert registry.list_registrations(conn) == []
+
+
+def test_list_registrations_returns_all_newest_first(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    registry.add_registration(conn, "W4BRD-13", "!aabbccdd")
+    registry.add_registration(conn, "WU2Z", "!11223344")
+
+    rows = registry.list_registrations(conn)
+    assert [r.callsign for r in rows] == ["WU2Z", "W4BRD-13"]
+    assert rows[0].node_id == "!11223344"
+    assert isinstance(rows[0].created_at, float)
+
+
+def test_list_registrations_excludes_removed(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    registry.add_registration(conn, "W4BRD-13", "!aabbccdd")
+    registry.remove_registration(conn, "W4BRD-13")
+    assert registry.list_registrations(conn) == []

@@ -1,9 +1,18 @@
 {
     "id": "aprs_bridge",
     "name": "APRS Bridge",
-    "version": "0.1.0",
+    "version": "0.5.0",
     "author": "David Fogle",
     "description": "Bidirectional bridge between APRS RF and Meshtastic mesh for registered, licensed callsigns.",
     "watchdog": true,
-    "entry_point": "main.py"
+    "entry_point": "main.py",
+    "router_prefix": "/api/plugins/aprs_bridge",
+    "static_prefix": "/static/plugins/aprs_bridge",
+    "nav_menu": [
+        {
+            "label": "APRS Bridge",
+            "icon": "fa-satellite-dish",
+            "href": "/plugin/aprs_bridge/index.html"
+        }
+    ]
 }

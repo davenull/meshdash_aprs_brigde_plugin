@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import List, Optional
+
+
+@dataclass(frozen=True)
+class Registration:
+    callsign: str
+    node_id: str
+    created_at: float
 
 
 def init_db(path: str) -> sqlite3.Connection:
@@ -75,6 +83,13 @@ def lookup_node_for_callsign(conn: sqlite3.Connection, callsign: str) -> Optiona
         (_normalize(callsign),),
     ).fetchone()
     return row[0] if row else None
+
+
+def list_registrations(conn: sqlite3.Connection) -> List[Registration]:
+    rows = conn.execute(
+        "SELECT callsign, node_id, created_at FROM callsign_registry ORDER BY created_at DESC"
+    ).fetchall()
+    return [Registration(callsign=r[0], node_id=r[1], created_at=r[2]) for r in rows]
 
 
 def lookup_callsign_for_node(conn: sqlite3.Connection, node_id: str) -> Optional[str]:

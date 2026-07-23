@@ -1,9 +1,12 @@
 import asyncio
+import dataclasses
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
+from typing import List, Optional
 
 # MeshDash's core loads this file standalone via
 # importlib.util.spec_from_file_location(f"plugin_{pid}", entry_file), i.e.
@@ -20,12 +23,21 @@ _PLUGINS_ROOT = os.path.dirname(_PLUGIN_DIR)
 if _PLUGINS_ROOT not in sys.path:
     sys.path.insert(0, _PLUGINS_ROOT)
 
+# fastapi/pydantic, like pypubsub, are real MeshDash core dependencies --
+# already present in its venv, not something our setup.py installs -- so
+# they're safe to import at module scope like the rest of this block.
+# aprs_bridge.config/registry/commands have zero third-party dependencies of
+# their own (json/os/dataclasses/sqlite3/re stdlib only), so they're safe at
+# module scope too; only protocol.kiss/ax25 and aprs_message (which need
+# kiss3/ax253) stay deferred into _bootstrap.
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from aprs_bridge import commands, registry
+from aprs_bridge.config import ConfigError, load_config
+
 core_context: dict = {}
-# No plugin_router in Phase 2 (no HTTP routes). The core does
-# `if hasattr(plugin_module, "plugin_router"): app.include_router(plugin_module.plugin_router, ...)`
-# -- hasattr() is true even for a module-level `plugin_router = None`, which
-# would then crash include_router(None, ...). Omit the name entirely rather
-# than setting it to None.
+plugin_router = APIRouter()
 
 SENTINEL = os.path.join(_PLUGIN_DIR, ".setup_complete")
 SETUP_SCRIPT = os.path.join(_PLUGIN_DIR, "setup.py")
@@ -97,8 +109,6 @@ def _bootstrap(context: dict) -> None:
 
     try:
         from aprs_bridge.ack_tracker import AckTracker, MsgnoGenerator
-        from aprs_bridge.config import ConfigError, load_config
-        from aprs_bridge import registry
         from aprs_bridge.transport import TncTransport
         from aprs_bridge.bridge import RfToMeshBridge
         from aprs_bridge.mesh_bridge import MeshToRfBridge
@@ -235,6 +245,7 @@ def _bootstrap(context: dict) -> None:
     except Exception:
         logger.exception("aprs_bridge: pub.subscribe(meshtastic.receive) failed")
 
+    _state["cfg"] = cfg
     _state["transport"] = transport
     _state["registry_conn"] = registry_conn
     _state["bridge"] = bridge
@@ -258,3 +269,162 @@ def init_plugin(context: dict) -> None:
         target=_bootstrap, args=(context,), daemon=True, name="aprs-bridge-bootstrap"
     ).start()
     logger.info("aprs_bridge: init_plugin returning; bootstrap running in background")
+
+
+# --- HTTP API (used by static/index.html) ---
+#
+# Route handlers read from _state, which _bootstrap populates once ready
+# (usually within a second or two of restart; longer only on a first-ever
+# run that needs to pip-install kiss3/ax253/aprs3). Every handler treats
+# a missing _state key as "not ready yet" rather than assuming bootstrap
+# has completed, since a request can arrive before it has.
+
+
+class RegistrationRequest(BaseModel):
+    callsign: str
+    node_id: str
+
+
+class ConfigUpdateRequest(BaseModel):
+    tnc_mode: str
+    tnc_host: str
+    tnc_port: int
+    kiss_port: int = 0
+    gateway_callsign: str
+    aprs_tocall: str = "APZBRD"
+    digi_path: List[str] = Field(default_factory=lambda: ["WIDE1-1", "WIDE2-1"])
+    mesh_channel_index: int = 0
+    registry_db_path: Optional[str] = None
+    dedupe_ttl_sec: float = 30.0
+    rate_limit_per_min: float = 20.0
+    rate_limit_burst: float = 10.0
+    per_callsign_rate_limit_per_min: float = 6.0
+    per_callsign_rate_limit_burst: float = 3.0
+    ack_retry_intervals_sec: List[float] = Field(default_factory=lambda: [30.0, 60.0, 120.0])
+    ack_max_attempts: int = 4
+
+
+@plugin_router.get("/status")
+async def get_status():
+    cfg = _state.get("cfg")
+    if cfg is None:
+        return {"status": "starting"}
+
+    conn = _state.get("registry_conn")
+    transport = _state.get("transport")
+    ack_tracker = _state.get("ack_tracker")
+    registrations = await asyncio.to_thread(registry.list_registrations, conn) if conn else []
+
+    return {
+        "status": "running",
+        "tnc_connected": transport.is_connected() if transport else False,
+        "tnc_mode": cfg.tnc_mode,
+        "tnc_host": cfg.tnc_host,
+        "tnc_port": cfg.tnc_port,
+        "gateway_callsign": cfg.gateway_callsign,
+        "registration_count": len(registrations),
+        "pending_acks": ack_tracker.pending_count() if ack_tracker else 0,
+    }
+
+
+@plugin_router.get("/registrations")
+async def list_registrations_endpoint():
+    conn = _state.get("registry_conn")
+    if conn is None:
+        raise HTTPException(503, "bridge not ready yet")
+    rows = await asyncio.to_thread(registry.list_registrations, conn)
+    return {
+        "registrations": [
+            {"callsign": r.callsign, "node_id": r.node_id, "created_at": r.created_at}
+            for r in rows
+        ]
+    }
+
+
+@plugin_router.post("/registrations")
+async def add_registration_endpoint(req: RegistrationRequest):
+    conn = _state.get("registry_conn")
+    if conn is None:
+        raise HTTPException(503, "bridge not ready yet")
+
+    callsign = req.callsign.strip().upper()
+    if not commands.is_valid_callsign(callsign):
+        raise HTTPException(400, f"{req.callsign!r} doesn't look like a valid callsign-SSID (e.g. W4BRD-13)")
+
+    node_id = req.node_id.strip()
+    if not node_id.startswith("!"):
+        raise HTTPException(400, "node_id must start with '!' (e.g. '!aabbccdd')")
+
+    await asyncio.to_thread(registry.add_registration, conn, callsign, node_id)
+    return {"status": "ok", "callsign": callsign, "node_id": node_id}
+
+
+@plugin_router.delete("/registrations/{callsign}")
+async def remove_registration_endpoint(callsign: str):
+    conn = _state.get("registry_conn")
+    if conn is None:
+        raise HTTPException(503, "bridge not ready yet")
+    await asyncio.to_thread(registry.remove_registration, conn, callsign)
+    return {"status": "ok"}
+
+
+def _read_raw_config() -> dict:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _config_differs(saved: dict, running: dict) -> bool:
+    """Compares only keys present in saved (raw JSON on disk, which may
+    omit defaulted fields) against running (the fully-resolved, currently
+    active BridgeConfig) -- so a config.json edit that hasn't been picked
+    up by a restart yet is visible as a real difference."""
+    for key, value in saved.items():
+        if key not in running:
+            continue
+        running_value = running[key]
+        if isinstance(running_value, tuple):
+            running_value = list(running_value)
+        if value != running_value:
+            return True
+    return False
+
+
+@plugin_router.get("/config")
+async def get_config():
+    try:
+        saved = await asyncio.to_thread(_read_raw_config)
+    except Exception as exc:
+        raise HTTPException(500, f"failed to read config.json: {exc}")
+
+    running_cfg = _state.get("cfg")
+    running = dataclasses.asdict(running_cfg) if running_cfg is not None else None
+    restart_required = running is not None and _config_differs(saved, running)
+
+    return {"saved": saved, "running": running, "restart_required": restart_required}
+
+
+@plugin_router.post("/config")
+async def update_config(req: ConfigUpdateRequest):
+    data = req.model_dump(exclude_none=True)
+    tmp_path = CONFIG_PATH + ".tmp"
+
+    def _write_and_validate():
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        try:
+            load_config(tmp_path)  # raises ConfigError on anything invalid
+        except ConfigError:
+            os.remove(tmp_path)
+            raise
+
+    try:
+        await asyncio.to_thread(_write_and_validate)
+    except ConfigError as exc:
+        raise HTTPException(400, str(exc))
+
+    os.replace(tmp_path, CONFIG_PATH)  # same filesystem as CONFIG_PATH -> atomic
+    return {
+        "status": "ok",
+        "restart_required": True,
+        "message": "Config saved. Restart the MeshDash service for changes to take effect.",
+    }

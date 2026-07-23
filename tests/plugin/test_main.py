@@ -71,7 +71,14 @@ def test_main_module_imports_without_raising():
     # for every plugin on a real MeshDash instance, per CLAUDE.md).
     module = _load_main_module()
     assert hasattr(module, "init_plugin")
-    assert not hasattr(module, "plugin_router")  # see main.py comment
+    # Phase 5: plugin_router is real now (registration + config API). It
+    # must be an actual APIRouter, never None -- the core does
+    # `if hasattr(plugin_module, "plugin_router"): app.include_router(plugin_module.plugin_router, ...)`,
+    # and hasattr() is true even for `plugin_router = None`, which would
+    # then crash include_router(None, ...).
+    from fastapi import APIRouter
+
+    assert isinstance(module.plugin_router, APIRouter)
 
 
 def test_main_module_does_not_import_third_party_deps_at_module_scope():

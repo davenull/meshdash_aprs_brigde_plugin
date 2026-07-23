@@ -9,10 +9,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Pypubsub is a real MeshDash core dependency (already present in its venv,
-# not something our setup.py installs) -- it's a dev-only dependency here,
-# needed so tests can exercise main.py's pub.subscribe wiring for real.
-dev = ["pytest", "Pypubsub"]
+# Pypubsub and fastapi are real MeshDash core dependencies (already present
+# in its venv, not something our setup.py installs) -- dev-only here, needed
+# so tests can exercise main.py's pub.subscribe wiring and plugin_router
+# routes for real. httpx backs FastAPI's TestClient.
+dev = ["pytest", "Pypubsub", "fastapi", "httpx"]
 
 [tool.pytest.ini_options]
 pythonpath = ["plugins"]

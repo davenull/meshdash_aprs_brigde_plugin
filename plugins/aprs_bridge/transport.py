@@ -49,6 +49,10 @@ class TncTransport:
                 except OSError:
                     pass
 
+    def is_connected(self) -> bool:
+        with self._sock_lock:
+            return self._sock is not None
+
     def send(self, data: bytes) -> bool:
         with self._sock_lock:
             if self._sock is None:

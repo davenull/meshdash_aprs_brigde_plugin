@@ -36,6 +36,24 @@ def test_transport_receives_and_decodes_frames(kiss_tcp_server):
         transport.stop()
 
 
+def test_is_connected_reflects_connection_state(kiss_tcp_server):
+    transport = TncTransport(
+        host=kiss_tcp_server.host,
+        port=kiss_tcp_server.port,
+        on_frame=lambda payload: None,
+        logger=logging.getLogger("test.transport"),
+        reconnect_delay=0.1,
+        recv_timeout=0.1,
+    )
+    assert transport.is_connected() is False
+    transport.start()
+    try:
+        assert _wait_until(lambda: transport.is_connected() is True)
+    finally:
+        transport.stop()
+        assert _wait_until(lambda: transport.is_connected() is False)
+
+
 def test_transport_send_writes_kiss_bytes_to_server(kiss_tcp_server):
     transport = TncTransport(
         host=kiss_tcp_server.host,

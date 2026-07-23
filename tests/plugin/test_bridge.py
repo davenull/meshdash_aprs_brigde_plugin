@@ -417,6 +417,43 @@ def test_message_addressed_to_gateway_callsign_still_delivers_if_registered(
     assert _wait_until(lambda: len(sent_rf_frames) == 1)  # still gets a normal ack
 
 
+def test_message_to_gateway_callsign_routes_by_conversation_history(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # A reply from an RF correspondent is always addressed to the
+    # gateway's own callsign (mesh->RF frames never carry the individual
+    # sender's callsign as source), so conversation history -- not
+    # registration -- is what routes it back to the right mesh node.
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop
+    )
+    registry.set_conversation_node(conn, "N0CALL-10", "!node0001")
+
+    frame = _build_rf_frame("W4BRD-13", "hi there", msgno="900", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    sent = fake_connection_manager.sent[0]
+    assert sent["destinationId"] == "!node0001"
+    assert sent["text"] == "N0CALL-10: hi there"
+
+
+def test_conversation_history_takes_priority_over_coincidental_registration(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop
+    )
+    registry.add_registration(conn, "W4BRD-13", "!aabbccdd")  # coincidental registration
+    registry.set_conversation_node(conn, "N0CALL-10", "!node0001")  # actual conversation
+
+    frame = _build_rf_frame("W4BRD-13", "hi there", msgno="900", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert fake_connection_manager.sent[0]["destinationId"] == "!node0001"
+
+
 def test_ack_for_unknown_msgno_does_not_raise_or_deliver(
     tmp_path, fake_connection_manager, running_event_loop
 ):

@@ -173,6 +173,15 @@ class MeshToRfBridge:
 
         self._send_to_rf(from_id, attribution, addressee, message_text)
         registry.set_last_correspondent(self._registry_conn, identity_key, addressee)
+        # Every outbound frame's AX.25 source is the gateway's own
+        # callsign, so when `addressee` replies, their reply comes back
+        # addressed to us, not to this sender specifically -- record who
+        # sent it so that reply can find its way back to the right mesh
+        # node (see bridge.py's on_ax25_frame). Unlike last_active_node
+        # below, this isn't gated on registration: an unregistered sender
+        # needs this route too, since they have no callsign RF users can
+        # address directly in the first place.
+        registry.set_conversation_node(self._registry_conn, addressee, from_id)
         if sender_callsign is not None:
             # A callsign can have several registered devices; remember
             # which one most recently sent, so an RF reply to this

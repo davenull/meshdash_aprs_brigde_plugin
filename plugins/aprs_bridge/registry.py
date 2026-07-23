@@ -74,6 +74,15 @@ def init_db(path: str) -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversation_node (
+            rf_correspondent TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -170,5 +179,30 @@ def get_last_active_node(conn: sqlite3.Connection, callsign: str) -> Optional[st
     row = conn.execute(
         "SELECT node_id FROM last_active_node WHERE callsign = ?",
         (_normalize(callsign),),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def set_conversation_node(conn: sqlite3.Connection, rf_correspondent: str, node_id: str) -> None:
+    """Records which mesh node most recently sent a message to
+    rf_correspondent, regardless of registration. Every outgoing
+    mesh->RF frame always carries the gateway's own callsign as its
+    AX.25 source (never the individual sender's), so when
+    rf_correspondent replies, their reply is addressed back to the
+    gateway callsign too -- the addressee field alone can't say which
+    mesh node the conversation belongs to. This table lets an incoming
+    reply be routed by who sent it (rf_correspondent, i.e. frame.source
+    on RX) instead."""
+    conn.execute(
+        "INSERT OR REPLACE INTO conversation_node (rf_correspondent, node_id, updated_at) VALUES (?, ?, ?)",
+        (_normalize(rf_correspondent), node_id, time.time()),
+    )
+    conn.commit()
+
+
+def get_conversation_node(conn: sqlite3.Connection, rf_correspondent: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT node_id FROM conversation_node WHERE rf_correspondent = ?",
+        (_normalize(rf_correspondent),),
     ).fetchone()
     return row[0] if row else None

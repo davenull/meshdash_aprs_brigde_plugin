@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from .ack_tracker import AckTracker
 from .config import BridgeConfig
@@ -15,24 +15,35 @@ from . import registry
 
 
 class RfToMeshBridge:
-    """RF -> mesh. Delivers APRS messages addressed to a registered
-    callsign to the Meshtastic node(s) registered under that callsign (an
-    operator may register more than one device to the same callsign; a
-    device itself still maps to exactly one callsign). When a callsign has
-    more than one registered device, delivery goes only to whichever
-    device most recently sent mesh->RF under that callsign (tracked in
-    registry.last_active_node by mesh_bridge.py) -- falling back to every
-    device if none has ever sent (registered but silent) or the
-    last-active one was since unregistered. If the addressee isn't a
-    registered callsign, also tries matching it against a live
-    mesh node's short name -- this lets an RF sender reach an unlicensed
-    mesh user directly (third-party relay; see mesh_bridge.py's
-    docstring for the compliance model), the same way an unregistered
-    mesh sender can still reach RF. The text delivered to mesh is
-    prefixed with the RF sender's AX.25 source callsign ("N0CALL-10:
-    text") so the recipient can see who's messaging them. Sends an RF
-    ACK back over the TNC if the message carried a message number. Also
-    the RX side of the
+    """RF -> mesh. Three ways an incoming APRS message gets routed to a
+    mesh node, tried in order:
+
+    1. Addressed to our own gateway callsign, and a conversation is on
+       record for frame.source (registry.conversation_node, written by
+       mesh_bridge.py on every mesh->RF send): since every outbound
+       frame's AX.25 source is always the gateway's own callsign, not
+       the originating mesh sender's, an RF correspondent's reply is
+       always addressed back to us regardless of who they were actually
+       talking to -- this is what lets that reply find its way back to
+       an unregistered/unlicensed sender, who has no callsign of their
+       own for the correspondent to address in the first place.
+    2. Addressed to a registered callsign: delivered to the Meshtastic
+       node(s) registered under it (an operator may register more than
+       one device to the same callsign; a device itself still maps to
+       exactly one callsign). With more than one registered device,
+       delivery goes only to whichever sent mesh->RF under that callsign
+       most recently (registry.last_active_node) -- falling back to
+       every device if none has ever sent, or the last-active one was
+       since unregistered.
+    3. Addressed to something matching a live mesh node's short name --
+       lets an RF sender reach an unlicensed mesh user directly even
+       without a prior conversation or registration (third-party relay;
+       see mesh_bridge.py's docstring for the compliance model).
+
+    The text delivered to mesh is prefixed with the RF sender's AX.25
+    source callsign ("N0CALL-10: text") so the recipient can see who's
+    messaging them. Sends an RF ACK back over the TNC if the message
+    carried a message number. Also the RX side of the
     mesh->RF ACK loop: an incoming APRS message addressed to our own
     gateway callsign that decodes as "ackNNN" clears the matching
     pending send in ack_tracker instead of being treated as
@@ -96,6 +107,8 @@ class RfToMeshBridge:
             self._logger.debug("aprs_bridge: malformed APRS message from %s: %s", frame.source, exc)
             return
 
+        node_ids: List[str] = []
+
         if message.addressee == self._cfg.gateway_callsign:
             acked_msgno = aprs_message.parse_ack(message)
             if acked_msgno is not None:
@@ -109,26 +122,37 @@ class RfToMeshBridge:
                         acked_msgno, frame.source,
                     )
                 return
-            # Not an ack: the gateway_callsign happens to also be a
-            # registered mesh user's callsign (nothing stops that -- the
-            # gateway is transmitted-as/attributed-to a licensed
-            # callsign, and a registered user's callsign is a separate,
-            # independent mapping that can coincide with it). Fall
-            # through to the normal registered-callsign delivery path
-            # below instead of silently dropping a real message just
-            # because its addressee string matches our own.
+            # Not an ack: since every mesh->RF frame uses the gateway's
+            # own callsign as its AX.25 source (never the individual
+            # sender's -- see mesh_bridge.py's docstring), this is most
+            # likely frame.source replying to something we sent on
+            # behalf of a mesh node. Route by conversation history
+            # (whichever mesh node last sent TO frame.source) rather than
+            # by addressee, since addressee here is just us regardless of
+            # who the original mesh sender was -- this is what lets a
+            # reply reach an unregistered/unlicensed sender, who has no
+            # callsign of their own for an RF correspondent to address.
+            conversation_node = registry.get_conversation_node(self._registry_conn, frame.source)
+            if conversation_node is not None:
+                node_ids = [conversation_node]
+            # No conversation on record: fall through below, which also
+            # covers gateway_callsign coincidentally being a registered
+            # mesh user's callsign in its own right.
 
-        node_ids = registry.lookup_nodes_for_callsign(self._registry_conn, message.addressee)
-        if len(node_ids) > 1:
-            # A callsign with several registered devices: route to just
-            # the one that most recently sent mesh->RF under this
-            # callsign, rather than fanning out to every device. Falls
-            # back to fan-out if we've never seen an outbound send from
-            # this callsign yet (registered-but-silent devices), or if
-            # the last-active device has since been unregistered.
-            last_active = registry.get_last_active_node(self._registry_conn, message.addressee)
-            if last_active in node_ids:
-                node_ids = [last_active]
+        if not node_ids:
+            node_ids = registry.lookup_nodes_for_callsign(self._registry_conn, message.addressee)
+            if len(node_ids) > 1:
+                # A callsign with several registered devices: route to
+                # just the one that most recently sent mesh->RF under
+                # this callsign, rather than fanning out to every device.
+                # Falls back to fan-out if we've never seen an outbound
+                # send from this callsign yet (registered-but-silent
+                # devices), or if the last-active device has since been
+                # unregistered.
+                last_active = registry.get_last_active_node(self._registry_conn, message.addressee)
+                if last_active in node_ids:
+                    node_ids = [last_active]
+
         if not node_ids:
             # Not a registered callsign -- also allow reaching a mesh
             # node directly by its live short name, so an RF sender can

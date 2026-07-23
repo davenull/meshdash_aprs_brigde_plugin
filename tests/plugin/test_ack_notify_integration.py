@@ -184,3 +184,30 @@ def test_mesh_sender_notified_on_final_failure(tmp_path, fake_connection_manager
     assert kind == "exhausted"
     assert addressee == "WU2Z"
     assert node_id == SENDER_NODE
+
+
+def test_unregistered_sender_receives_reply_via_conversation_tracking(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    notify_calls = []
+    rf_to_mesh, mesh_to_rf, conn, sent_rf_frames, _ack_tracker = _make_wired_bridges(
+        tmp_path, fake_connection_manager, running_event_loop, notify_calls
+    )
+    # No registration -- SENDER_NODE is an unlicensed mesh user relayed
+    # via third-party traffic, identified by mesh name rather than a
+    # callsign.
+    mesh_to_rf.on_mesh_packet(_dm_packet(SENDER_NODE, "WU2Z: hello there"))
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+
+    # WU2Z replies. Every outbound frame's AX.25 source is always the
+    # gateway's own callsign (never SENDER_NODE's, which doesn't have
+    # one), so WU2Z's reply comes back addressed to the gateway callsign
+    # -- conversation tracking is what lets it still find SENDER_NODE.
+    reply_info = aprs_message.encode_message("W4BRD-13", "hi there", msgno="900")
+    reply_frame = ax25.build_ui_frame("APZ019", "WU2Z", ["WIDE1-1", "WIDE2-1"], reply_info)
+    rf_to_mesh.on_ax25_frame(reply_frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    delivered = fake_connection_manager.sent[0]
+    assert delivered["destinationId"] == SENDER_NODE
+    assert delivered["text"] == "WU2Z: hi there"

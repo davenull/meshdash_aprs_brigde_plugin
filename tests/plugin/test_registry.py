@@ -110,6 +110,15 @@ def test_last_active_node_round_trip(tmp_path):
     assert registry.get_last_active_node(conn, "W4BRD-13") == "!node0002"
 
 
+def test_conversation_node_round_trip(tmp_path):
+    conn = registry.init_db(str(tmp_path / "reg.db"))
+    assert registry.get_conversation_node(conn, "WU2Z") is None
+    registry.set_conversation_node(conn, "wu2z", "!node0001")
+    assert registry.get_conversation_node(conn, "WU2Z") == "!node0001"
+    registry.set_conversation_node(conn, "WU2Z", "!node0002")
+    assert registry.get_conversation_node(conn, "WU2Z") == "!node0002"
+
+
 def test_list_registrations_empty(tmp_path):
     conn = registry.init_db(str(tmp_path / "reg.db"))
     assert registry.list_registrations(conn) == []

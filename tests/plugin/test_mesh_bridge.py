@@ -210,7 +210,7 @@ def test_registered_sender_still_uses_real_callsign_not_mesh_name(
     _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
     parsed = ax25.parse_ui_frame(ax25_bytes)
     message = aprs_message.decode_message(parsed.info)
-    assert message.text == "W4BRD-13: hello"  # real callsign, not "via PGR"
+    assert message.text == "W4BRD-13 (PGR): hello"  # real callsign + mesh name, not "via PGR"
 
 
 def test_registered_sender_with_explicit_addressee_reaches_rf(
@@ -226,7 +226,7 @@ def test_registered_sender_with_explicit_addressee_reaches_rf(
     assert parsed.source == "W4BRD-13"  # gateway callsign, not the mesh user's
     assert parsed.destination == "APZBRD"
     assert message.addressee == "WU2Z"
-    assert message.text == "W4BRD-13: Testing 123"  # user callsign embedded in payload
+    assert message.text == "W4BRD-13 (0001): Testing 123"  # user callsign embedded in payload
 
 
 def test_registered_sender_reaches_rf_on_channel_0(tmp_path, fake_connection_manager, running_event_loop):
@@ -254,7 +254,7 @@ def test_last_correspondent_used_when_no_explicit_addressee(
     assert _wait_until(lambda: len(sent_rf_frames) == 1)
     _parsed, message = _decode_last_rf_frame(sent_rf_frames)
     assert message.addressee == "WU2Z"
-    assert message.text == "W4BRD-13: just a reply, no callsign prefix"
+    assert message.text == "W4BRD-13 (0001): just a reply, no callsign prefix"
 
 
 def test_no_addressee_and_no_last_correspondent_replies_with_error(

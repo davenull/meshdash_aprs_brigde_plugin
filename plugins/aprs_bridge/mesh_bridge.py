@@ -32,9 +32,11 @@ class MeshToRfBridge:
       unaffected by anything below.
     - A mesh sender who has !register'd a real callsign gets that
       callsign embedded as attribution in the outgoing message text
-      ("user callsign in the payload path"). Anyone else is still
-      relayed -- identified instead by their mesh node's short name/ID,
-      never claiming a license they haven't verified.
+      ("user callsign in the payload path"), alongside their mesh short
+      name for readability ("CALLSIGN (SHORTNAME): text"). Anyone else
+      is still relayed -- identified instead by their mesh node's short
+      name/ID alone ("via SHORTNAME: text"), never claiming a license
+      they haven't verified.
     - Only genuine direct messages addressed to the gateway node reach
       this far at all (_handle_packet returns early on anything else) --
       broadcast/channel content, encrypted-default-channel included, is
@@ -138,10 +140,20 @@ class MeshToRfBridge:
         # stable per-sender string used for rate-limiting and
         # last-correspondent tracking -- it doesn't need to be a real
         # callsign to serve that purpose.
+        #
+        # The registered-sender attribution also includes the mesh short
+        # name alongside the callsign (not just the callsign alone): the
+        # callsign satisfies the legal attribution requirement, but on its
+        # own it's not always useful to the RF recipient -- it can even be
+        # identical to the gateway's own AX.25 source (e.g. during testing
+        # under one callsign), in which case a bare callsign in the text
+        # tells the recipient nothing they didn't already see in the
+        # frame's source field. The short name is what actually says which
+        # mesh node/person sent it.
         sender_callsign = registry.lookup_callsign_for_node(self._registry_conn, from_id)
         if sender_callsign is not None:
             identity_key = sender_callsign
-            attribution = sender_callsign
+            attribution = f"{sender_callsign} ({self._mesh_short_name(from_id)})"
         else:
             identity_key = from_id
             attribution = f"via {self._mesh_short_name(from_id)}"

@@ -94,12 +94,14 @@ def load_config(path: str) -> BridgeConfig:
         ack_max_attempts=ack_max_attempts,
         # Gap between sequential RF->mesh deliveries when more than one
         # device is targeted (fan-out / "!ALL"). Confirmed live that a
-        # too-short gap (originally a hardcoded 0.5s) let a second
-        # delivery silently fail to reach its device even with
+        # too-short gap (originally a hardcoded 0.5s, then 2.0s) let a
+        # second delivery silently fail to reach its device even with
         # sendText(wantAck=True) requesting Meshtastic's own delivery
         # confirmation -- the first send's ack-wait/retry cycle appears
         # to still be occupying the radio when the second one goes out
-        # too soon after it. Configurable since the right value is a
-        # property of the radio/mesh, not something to hardcode.
-        mesh_fanout_delay_sec=float(raw.get("mesh_fanout_delay_sec", 2.0)),
+        # too soon after it. 4.0s is the smallest value confirmed
+        # reliable in that same live testing; still configurable since
+        # the right value is a property of the radio/mesh, not something
+        # to hardcode for every deployment.
+        mesh_fanout_delay_sec=float(raw.get("mesh_fanout_delay_sec", 4.0)),
     )

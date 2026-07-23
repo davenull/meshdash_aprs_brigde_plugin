@@ -83,7 +83,7 @@ def test_valid_minimal_config_applies_defaults(tmp_path):
     assert cfg.per_callsign_rate_limit_burst == 3.0
     assert cfg.ack_retry_intervals_sec == (30, 60, 120)
     assert cfg.ack_max_attempts == 4
-    assert cfg.mesh_fanout_delay_sec == 2.0
+    assert cfg.mesh_fanout_delay_sec == 4.0
 
 
 def test_ack_max_attempts_below_one_raises(tmp_path):

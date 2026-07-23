@@ -341,7 +341,7 @@ const App = {
       $('cfg-per_callsign_rate_limit_burst').value = c.per_callsign_rate_limit_burst ?? 3;
       $('cfg-ack_retry_intervals_sec').value = (c.ack_retry_intervals_sec ?? [30, 60, 120]).join(',');
       $('cfg-ack_max_attempts').value = c.ack_max_attempts ?? 4;
-      $('cfg-mesh_fanout_delay_sec').value = c.mesh_fanout_delay_sec ?? 2.0;
+      $('cfg-mesh_fanout_delay_sec').value = c.mesh_fanout_delay_sec ?? 4.0;
       if (d.restart_required) {
         showBanner('cfg-banner', 'warn', 'Saved config differs from the currently running config -- restart MeshDash to apply it.');
       }
@@ -367,7 +367,7 @@ const App = {
       per_callsign_rate_limit_burst: parseFloat($('cfg-per_callsign_rate_limit_burst').value || '3'),
       ack_retry_intervals_sec: $('cfg-ack_retry_intervals_sec').value.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n)),
       ack_max_attempts: parseInt($('cfg-ack_max_attempts').value || '4', 10),
-      mesh_fanout_delay_sec: parseFloat($('cfg-mesh_fanout_delay_sec').value || '2.0'),
+      mesh_fanout_delay_sec: parseFloat($('cfg-mesh_fanout_delay_sec').value || '4.0'),
     };
     try {
       const r = await fetch(`${API}/config`, {

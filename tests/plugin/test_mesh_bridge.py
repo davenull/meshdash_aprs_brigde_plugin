@@ -303,6 +303,33 @@ def test_sending_updates_last_correspondent(tmp_path, fake_connection_manager, r
     assert registry.get_last_correspondent(conn, "W4BRD-13") == "WU2Z"
 
 
+def test_sending_updates_last_active_node_for_registered_sender(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "W4BRD-13", "!node0001")
+    registry.add_registration(conn, "W4BRD-13", "!node0002")
+
+    bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: first message", channel=2))
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+    assert registry.get_last_active_node(conn, "W4BRD-13") == "!node0001"
+
+    bridge.on_mesh_packet(_dm_packet("!node0002", "WU2Z: second message", channel=2))
+    assert _wait_until(lambda: len(sent_rf_frames) == 2)
+    assert registry.get_last_active_node(conn, "W4BRD-13") == "!node0002"
+
+
+def test_unregistered_sender_does_not_touch_last_active_node(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+
+    bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: hello", channel=2))
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+
+    assert registry.get_last_active_node(conn, "W4BRD-13") is None
+
+
 def test_broadcast_and_non_dm_traffic_is_ignored(tmp_path, fake_connection_manager, running_event_loop):
     bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     registry.add_registration(conn, "W4BRD-13", "!node0001")

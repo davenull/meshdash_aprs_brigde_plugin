@@ -65,6 +65,15 @@ def init_db(path: str) -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS last_active_node (
+            callsign TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -140,6 +149,26 @@ def set_last_correspondent(conn: sqlite3.Connection, callsign: str, addressee: s
 def get_last_correspondent(conn: sqlite3.Connection, callsign: str) -> Optional[str]:
     row = conn.execute(
         "SELECT addressee FROM last_correspondent WHERE callsign = ?",
+        (_normalize(callsign),),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def set_last_active_node(conn: sqlite3.Connection, callsign: str, node_id: str) -> None:
+    """Records which device most recently sent an outbound (mesh->RF)
+    message under callsign. Used to route an RF reply to just that one
+    device when a callsign has several registered devices, instead of
+    fanning out to all of them."""
+    conn.execute(
+        "INSERT OR REPLACE INTO last_active_node (callsign, node_id, updated_at) VALUES (?, ?, ?)",
+        (_normalize(callsign), node_id, time.time()),
+    )
+    conn.commit()
+
+
+def get_last_active_node(conn: sqlite3.Connection, callsign: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT node_id FROM last_active_node WHERE callsign = ?",
         (_normalize(callsign),),
     ).fetchone()
     return row[0] if row else None

@@ -173,6 +173,12 @@ class MeshToRfBridge:
 
         self._send_to_rf(from_id, attribution, addressee, message_text)
         registry.set_last_correspondent(self._registry_conn, identity_key, addressee)
+        if sender_callsign is not None:
+            # A callsign can have several registered devices; remember
+            # which one most recently sent, so an RF reply to this
+            # callsign can be routed to just that device instead of
+            # fanning out to all of them (see bridge.py's on_ax25_frame).
+            registry.set_last_active_node(self._registry_conn, sender_callsign, from_id)
 
     def _mesh_long_name(self, node_id: str) -> str:
         nodes = getattr(self._meshtastic_data, "nodes", {}) or {}

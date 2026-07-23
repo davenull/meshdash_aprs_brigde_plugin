@@ -100,8 +100,10 @@ def test_message_delivered_to_every_device_registered_under_the_callsign(
     tmp_path, fake_connection_manager, running_event_loop
 ):
     # An operator running more than one mesh node can register all of
-    # them under the same callsign; an incoming RF message for that
-    # callsign should reach every one of their devices.
+    # them under the same callsign. With no last_active_node record yet
+    # (neither device has ever sent mesh->RF under this callsign), an
+    # incoming RF message for that callsign falls back to reaching every
+    # device.
     bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     registry.add_registration(conn, "W4BRD-13", "!11111111")
     registry.add_registration(conn, "W4BRD-13", "!22222222")
@@ -115,6 +117,40 @@ def test_message_delivered_to_every_device_registered_under_the_callsign(
     assert all(s["text"] == "N0CALL-10: Testing" for s in fake_connection_manager.sent)
     # Still exactly one ack, not one per device -- it's one RF event.
     assert _wait_until(lambda: len(sent_rf_frames) == 1)
+
+
+def test_message_routed_only_to_last_active_device_when_multiple_registered(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "W4BRD-13", "!11111111")
+    registry.add_registration(conn, "W4BRD-13", "!22222222")
+    registry.set_last_active_node(conn, "W4BRD-13", "!22222222")
+
+    frame = _build_rf_frame("W4BRD-13", "Testing", msgno="003")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert fake_connection_manager.sent[0]["destinationId"] == "!22222222"
+
+
+def test_message_falls_back_to_fan_out_when_last_active_device_unregistered(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # last_active_node pointed at a device that has since been removed
+    # from the registry -- don't drop the message, fall back to every
+    # remaining registered device instead.
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "W4BRD-13", "!11111111")
+    registry.add_registration(conn, "W4BRD-13", "!22222222")
+    registry.set_last_active_node(conn, "W4BRD-13", "!33333333")  # no longer registered
+
+    frame = _build_rf_frame("W4BRD-13", "Testing", msgno="003")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 2)
+    destinations = {s["destinationId"] for s in fake_connection_manager.sent}
+    assert destinations == {"!11111111", "!22222222"}
 
 
 def test_message_to_registered_callsign_is_delivered_to_mesh(

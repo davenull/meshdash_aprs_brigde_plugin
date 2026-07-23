@@ -6,18 +6,22 @@ import sqlite3
 from typing import Any, Callable
 
 from . import commands, registry
+from .ack_tracker import AckTracker, MsgnoGenerator
 from .commands import CommandError
 from .config import BridgeConfig
 from .protocol import ax25, aprs_message, kiss
+from .protocol.dedupe import DedupeCache
 from .protocol.errors import ProtocolError
+from .protocol.ratelimit import RateLimiter
 
 _MAX_OUTBOUND_TEXT = 67  # APRS message text limit; enforced again defensively here.
 
 
 class MeshToRfBridge:
-    """Phase 3: mesh -> RF. Handles !register/!unregister DM commands (no
-    RF involved) and forwards CALLSIGN: prefixed (or last-correspondent)
-    DMs from registered mesh nodes out over RF as APRS messages.
+    """Mesh -> RF. Handles !register/!unregister DM commands (no RF
+    involved) and forwards CALLSIGN: prefixed (or last-correspondent)
+    DMs from registered mesh nodes out over RF as APRS messages, tracked
+    for ACK/retransmit via ack_tracker.
 
     Hard invariants enforced here (see CLAUDE.md):
     - Only a sender with a current registration may reach RF. No
@@ -44,6 +48,10 @@ class MeshToRfBridge:
         event_loop: asyncio.AbstractEventLoop,
         logger: logging.Logger,
         transport_send: Callable[[bytes], bool],
+        dedupe: DedupeCache,
+        ack_tracker: AckTracker,
+        rate_limiter: RateLimiter,
+        msgno_generator: MsgnoGenerator,
     ) -> None:
         self._cfg = cfg
         self._registry_conn = registry_conn
@@ -52,6 +60,10 @@ class MeshToRfBridge:
         self._loop = event_loop
         self._logger = logger
         self._transport_send = transport_send
+        self._dedupe = dedupe
+        self._ack_tracker = ack_tracker
+        self._rate_limiter = rate_limiter
+        self._msgno_generator = msgno_generator
 
     def on_mesh_packet(self, packet: dict, interface: Any = None) -> None:
         try:
@@ -76,6 +88,15 @@ class MeshToRfBridge:
 
         text = (decoded.get("text") or "").strip()
         if not text:
+            return
+
+        # Prefer the mesh packet id (Meshtastic's own dedup key) when
+        # present; fall back to (from_id, text) for synthetic/test
+        # packets or the rare packet missing an id.
+        packet_id = packet.get("id")
+        signature = ("mesh", packet_id) if packet_id is not None else ("mesh", from_id, text)
+        if self._dedupe.seen_or_mark(signature):
+            self._logger.debug("aprs_bridge: dropping duplicate mesh packet %r", signature)
             return
 
         self._handle_dm(from_id, text)
@@ -112,6 +133,13 @@ class MeshToRfBridge:
             self._reply(from_id, "Not registered. DM '!register CALLSIGN-SSID' first.")
             return
 
+        if not self._rate_limiter.allow(sender_callsign):
+            self._logger.warning(
+                "aprs_bridge: rate limit exceeded for %s; dropping mesh->RF request", sender_callsign
+            )
+            self._reply(from_id, "Rate limit exceeded; message not sent. Try again shortly.")
+            return
+
         addressee, message_text = commands.parse_outbound_request(text)
         if addressee is None:
             addressee = registry.get_last_correspondent(self._registry_conn, sender_callsign)
@@ -126,8 +154,13 @@ class MeshToRfBridge:
         registry.set_last_correspondent(self._registry_conn, sender_callsign, addressee)
 
     def _send_to_rf(self, sender_callsign: str, addressee: str, message_text: str) -> None:
+        msgno = self._msgno_generator.next()
         prefix = f"{sender_callsign}: "
-        available = _MAX_OUTBOUND_TEXT - len(prefix)
+        # Reserve room for the trailing "{msgno" (1 + up to 5 chars) the
+        # same way encode_message will append it, so the combined field
+        # never exceeds the 67-char APRS message text limit.
+        suffix_len = 1 + len(msgno)
+        available = _MAX_OUTBOUND_TEXT - len(prefix) - suffix_len
         if available <= 0:
             self._logger.warning(
                 "aprs_bridge: sender callsign %r alone leaves no room for message text",
@@ -137,7 +170,7 @@ class MeshToRfBridge:
         text = prefix + message_text[:available]
 
         try:
-            info = aprs_message.encode_message(addressee, text)
+            info = aprs_message.encode_message(addressee, text, msgno=msgno)
         except ProtocolError as exc:
             self._logger.warning("aprs_bridge: could not encode outbound APRS message: %s", exc)
             return
@@ -148,8 +181,15 @@ class MeshToRfBridge:
         kiss_frame = kiss.encode_frame(ax25_frame, port=self._cfg.kiss_port)
         if self._transport_send(kiss_frame):
             self._logger.info(
-                "aprs_bridge: mesh->RF %s -> %s: %r", sender_callsign, addressee, message_text
+                "aprs_bridge: mesh->RF %s -> %s (msg %s): %r",
+                sender_callsign, addressee, msgno, message_text,
             )
+            self._ack_tracker.track(msgno, addressee, kiss_frame)
+            # Mark our own transmission's signature so a TNC echo /
+            # digipeat loopback is recognized as self-originated on RX,
+            # not re-processed (and not double-counted against the
+            # recipient's own rate-limit bucket) as fresh RF traffic.
+            self._dedupe.mark((self._cfg.gateway_callsign, addressee, text, msgno))
         else:
             self._logger.warning("aprs_bridge: failed to send mesh->RF message to %s", addressee)
 

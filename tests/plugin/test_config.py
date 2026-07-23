@@ -76,6 +76,28 @@ def test_valid_minimal_config_applies_defaults(tmp_path):
     assert cfg.digi_path == ("WIDE1-1", "WIDE2-1")
     assert cfg.mesh_channel_index == 0
     assert cfg.registry_db_path == str(tmp_path / "registrations.db")
+    assert cfg.dedupe_ttl_sec == 30.0
+    assert cfg.rate_limit_per_min == 20.0
+    assert cfg.rate_limit_burst == 10.0
+    assert cfg.per_callsign_rate_limit_per_min == 6.0
+    assert cfg.per_callsign_rate_limit_burst == 3.0
+    assert cfg.ack_retry_intervals_sec == (30, 60, 120)
+    assert cfg.ack_max_attempts == 4
+
+
+def test_ack_max_attempts_below_one_raises(tmp_path):
+    path = _write_config(
+        tmp_path,
+        {
+            "tnc_mode": "kiss_tcp",
+            "tnc_host": "127.0.0.1",
+            "tnc_port": 8001,
+            "gateway_callsign": "W4BRD-13",
+            "ack_max_attempts": 0,
+        },
+    )
+    with pytest.raises(ConfigError):
+        load_config(path)
 
 
 def test_full_config_overrides_all_defaults(tmp_path):
@@ -91,6 +113,13 @@ def test_full_config_overrides_all_defaults(tmp_path):
             "digi_path": ["WIDE2-2"],
             "mesh_channel_index": 3,
             "registry_db_path": "/tmp/custom_registry.db",
+            "dedupe_ttl_sec": 15,
+            "rate_limit_per_min": 30,
+            "rate_limit_burst": 15,
+            "per_callsign_rate_limit_per_min": 10,
+            "per_callsign_rate_limit_burst": 5,
+            "ack_retry_intervals_sec": [10, 20],
+            "ack_max_attempts": 2,
         },
     )
     cfg = load_config(path)
@@ -102,3 +131,10 @@ def test_full_config_overrides_all_defaults(tmp_path):
     assert cfg.digi_path == ("WIDE2-2",)
     assert cfg.mesh_channel_index == 3
     assert cfg.registry_db_path == "/tmp/custom_registry.db"
+    assert cfg.dedupe_ttl_sec == 15
+    assert cfg.rate_limit_per_min == 30
+    assert cfg.rate_limit_burst == 15
+    assert cfg.per_callsign_rate_limit_per_min == 10
+    assert cfg.per_callsign_rate_limit_burst == 5
+    assert cfg.ack_retry_intervals_sec == (10, 20)
+    assert cfg.ack_max_attempts == 2

@@ -66,6 +66,22 @@ async def _watchdog_heartbeat(context: dict) -> None:
             logger.exception("aprs_bridge: watchdog heartbeat error")
 
 
+async def _ack_poll_loop(ack_tracker, logger) -> None:
+    """Periodically checks for due ACK retransmits / exhausted sends.
+    ack_tracker.poll() can do a blocking socket write via transport_send,
+    so it's offloaded to a thread rather than run directly on the event
+    loop -- matches CLAUDE.md's "DB access from async handlers goes
+    through asyncio.to_thread" caution, applied here to socket I/O."""
+    while True:
+        try:
+            await asyncio.sleep(10)
+            await asyncio.to_thread(ack_tracker.poll)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("aprs_bridge: ack poll loop error")
+
+
 def _bootstrap(context: dict) -> None:
     """Runs in its own background thread so init_plugin() can return well
     within its 15s timeout even on first run, when setup.py may need to
@@ -80,11 +96,14 @@ def _bootstrap(context: dict) -> None:
             return
 
     try:
+        from aprs_bridge.ack_tracker import AckTracker, MsgnoGenerator
         from aprs_bridge.config import ConfigError, load_config
         from aprs_bridge import registry
         from aprs_bridge.transport import TncTransport
         from aprs_bridge.bridge import RfToMeshBridge
         from aprs_bridge.mesh_bridge import MeshToRfBridge
+        from aprs_bridge.protocol.dedupe import DedupeCache
+        from aprs_bridge.protocol.ratelimit import RateLimiter
         # pypubsub is already a MeshDash core dependency (not something we
         # install ourselves), but it's still third-party, so it's imported
         # here rather than at module scope like everything else in this
@@ -115,6 +134,33 @@ def _bootstrap(context: dict) -> None:
         transport = transport_holder.get("transport")
         return transport.send(data) if transport is not None else False
 
+    # Shared between both bridge directions: dedupe catches a loop/echo
+    # regardless of which direction re-hears it, and ack_tracker's
+    # mesh->RF sends are acked by RF->mesh's RX path (see bridge.py's
+    # docstring). Each direction gets its own RateLimiter -- the two
+    # sides consume distinct shared resources (mesh channel load vs RF
+    # airtime) even though the configured numeric limits are the same.
+    dedupe = DedupeCache(ttl_seconds=cfg.dedupe_ttl_sec)
+    ack_tracker = AckTracker(
+        transport_send=_transport_send,
+        logger=logger,
+        retry_intervals=cfg.ack_retry_intervals_sec,
+        max_attempts=cfg.ack_max_attempts,
+    )
+    msgno_generator = MsgnoGenerator()
+    rf_to_mesh_limiter = RateLimiter(
+        direction_rate_per_sec=cfg.rate_limit_per_min / 60.0,
+        direction_capacity=cfg.rate_limit_burst,
+        per_callsign_rate_per_sec=cfg.per_callsign_rate_limit_per_min / 60.0,
+        per_callsign_capacity=cfg.per_callsign_rate_limit_burst,
+    )
+    mesh_to_rf_limiter = RateLimiter(
+        direction_rate_per_sec=cfg.rate_limit_per_min / 60.0,
+        direction_capacity=cfg.rate_limit_burst,
+        per_callsign_rate_per_sec=cfg.per_callsign_rate_limit_per_min / 60.0,
+        per_callsign_capacity=cfg.per_callsign_rate_limit_burst,
+    )
+
     bridge = RfToMeshBridge(
         cfg=cfg,
         registry_conn=registry_conn,
@@ -122,6 +168,9 @@ def _bootstrap(context: dict) -> None:
         event_loop=loop,
         logger=logger,
         transport_send=_transport_send,
+        dedupe=dedupe,
+        ack_tracker=ack_tracker,
+        rate_limiter=rf_to_mesh_limiter,
     )
     transport = TncTransport(
         host=cfg.tnc_host,
@@ -140,7 +189,12 @@ def _bootstrap(context: dict) -> None:
         event_loop=loop,
         logger=logger,
         transport_send=_transport_send,
+        dedupe=dedupe,
+        ack_tracker=ack_tracker,
+        rate_limiter=mesh_to_rf_limiter,
+        msgno_generator=msgno_generator,
     )
+    asyncio.run_coroutine_threadsafe(_ack_poll_loop(ack_tracker, logger), loop)
     # Always unsubscribe before subscribing (wrapped in try/except) to
     # avoid double-registration if init_plugin ever runs again without a
     # full process restart -- matches the pattern MeshDash's own plugins
@@ -158,6 +212,8 @@ def _bootstrap(context: dict) -> None:
     _state["registry_conn"] = registry_conn
     _state["bridge"] = bridge
     _state["mesh_bridge"] = mesh_bridge
+    _state["dedupe"] = dedupe
+    _state["ack_tracker"] = ack_tracker
     logger.info("aprs_bridge: bridge started (TNC %s:%d)", cfg.tnc_host, cfg.tnc_port)
 
 

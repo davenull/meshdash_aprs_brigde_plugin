@@ -6,5 +6,12 @@
     "gateway_callsign": "W4BRD-13",
     "aprs_tocall": "APZBRD",
     "digi_path": ["WIDE1-1", "WIDE2-1"],
-    "mesh_channel_index": 0
+    "mesh_channel_index": 0,
+    "dedupe_ttl_sec": 30,
+    "rate_limit_per_min": 20,
+    "rate_limit_burst": 10,
+    "per_callsign_rate_limit_per_min": 6,
+    "per_callsign_rate_limit_burst": 3,
+    "ack_retry_intervals_sec": [30, 60, 120],
+    "ack_max_attempts": 4
 }

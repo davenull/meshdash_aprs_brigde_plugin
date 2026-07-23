@@ -3,9 +3,12 @@ import logging
 import time
 
 from aprs_bridge import registry
+from aprs_bridge.ack_tracker import AckTracker
 from aprs_bridge.bridge import RfToMeshBridge
 from aprs_bridge.config import BridgeConfig
 from aprs_bridge.protocol import ax25, aprs_message, kiss
+from aprs_bridge.protocol.dedupe import DedupeCache
+from aprs_bridge.protocol.ratelimit import RateLimiter
 
 
 def _wait_until(predicate, timeout=5, interval=0.02):
@@ -28,19 +31,42 @@ def _make_config(**overrides):
         digi_path=("WIDE1-1", "WIDE2-1"),
         mesh_channel_index=0,
         registry_db_path=":memory:",
+        dedupe_ttl_sec=30.0,
+        rate_limit_per_min=6000.0,  # effectively unlimited by default
+        rate_limit_burst=1000.0,
+        per_callsign_rate_limit_per_min=6000.0,
+        per_callsign_rate_limit_burst=1000.0,
+        ack_retry_intervals_sec=(30.0, 60.0, 120.0),
+        ack_max_attempts=4,
     )
     defaults.update(overrides)
     return BridgeConfig(**defaults)
 
 
-def _make_bridge(tmp_path, fake_connection_manager, running_event_loop, sent_rf_frames=None):
+def _make_bridge(
+    tmp_path, fake_connection_manager, running_event_loop, sent_rf_frames=None, **cfg_overrides
+):
     conn = registry.init_db(str(tmp_path / "reg.db"))
-    cfg = _make_config(registry_db_path=str(tmp_path / "reg.db"))
+    cfg = _make_config(registry_db_path=str(tmp_path / "reg.db"), **cfg_overrides)
     sent_rf_frames = sent_rf_frames if sent_rf_frames is not None else []
 
     def transport_send(data: bytes) -> bool:
         sent_rf_frames.append(data)
         return True
+
+    dedupe = DedupeCache(ttl_seconds=cfg.dedupe_ttl_sec)
+    ack_tracker = AckTracker(
+        transport_send=transport_send,
+        logger=logging.getLogger("test.bridge.ack"),
+        retry_intervals=cfg.ack_retry_intervals_sec,
+        max_attempts=cfg.ack_max_attempts,
+    )
+    rate_limiter = RateLimiter(
+        direction_rate_per_sec=cfg.rate_limit_per_min / 60.0,
+        direction_capacity=cfg.rate_limit_burst,
+        per_callsign_rate_per_sec=cfg.per_callsign_rate_limit_per_min / 60.0,
+        per_callsign_capacity=cfg.per_callsign_rate_limit_burst,
+    )
 
     bridge = RfToMeshBridge(
         cfg=cfg,
@@ -49,8 +75,11 @@ def _make_bridge(tmp_path, fake_connection_manager, running_event_loop, sent_rf_
         event_loop=running_event_loop,
         logger=logging.getLogger("test.bridge"),
         transport_send=transport_send,
+        dedupe=dedupe,
+        ack_tracker=ack_tracker,
+        rate_limiter=rate_limiter,
     )
-    return bridge, conn, sent_rf_frames
+    return bridge, conn, sent_rf_frames, ack_tracker
 
 
 def _build_rf_frame(addressee: str, text: str, msgno=None, source="N0CALL-10") -> bytes:
@@ -62,7 +91,7 @@ def _build_rf_frame(addressee: str, text: str, msgno=None, source="N0CALL-10") -
 def test_message_to_registered_callsign_is_delivered_to_mesh(
     tmp_path, fake_connection_manager, running_event_loop
 ):
-    bridge, conn, _ = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    bridge, conn, _, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     registry.add_registration(conn, "WU2Z", "!aabbccdd")
 
     frame = _build_rf_frame("WU2Z", "Testing", msgno="003")
@@ -78,7 +107,7 @@ def test_message_to_registered_callsign_is_delivered_to_mesh(
 def test_message_to_unregistered_callsign_is_dropped(
     tmp_path, fake_connection_manager, running_event_loop
 ):
-    bridge, _conn, sent_rf_frames = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    bridge, _conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
 
     frame = _build_rf_frame("NOBODY", "hi there")
     bridge.on_ax25_frame(frame)
@@ -91,7 +120,7 @@ def test_message_to_unregistered_callsign_is_dropped(
 def test_message_with_msgno_triggers_rf_ack(
     tmp_path, fake_connection_manager, running_event_loop
 ):
-    bridge, conn, sent_rf_frames = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     registry.add_registration(conn, "WU2Z", "!aabbccdd")
 
     frame = _build_rf_frame("WU2Z", "Testing", msgno="003", source="N0CALL-10")
@@ -113,7 +142,7 @@ def test_message_with_msgno_triggers_rf_ack(
 def test_message_without_msgno_does_not_trigger_ack(
     tmp_path, fake_connection_manager, running_event_loop
 ):
-    bridge, conn, sent_rf_frames = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     registry.add_registration(conn, "WU2Z", "!aabbccdd")
 
     frame = _build_rf_frame("WU2Z", "no ack here")
@@ -130,7 +159,7 @@ def test_delivery_skipped_when_connection_manager_not_ready(
     from tests.conftest import FakeConnectionManager
 
     not_ready_cm = FakeConnectionManager(ready=False)
-    bridge, conn, _ = _make_bridge(tmp_path, not_ready_cm, running_event_loop)
+    bridge, conn, _, _ack_tracker = _make_bridge(tmp_path, not_ready_cm, running_event_loop)
     registry.add_registration(conn, "WU2Z", "!aabbccdd")
 
     frame = _build_rf_frame("WU2Z", "hello")
@@ -143,7 +172,7 @@ def test_delivery_skipped_when_connection_manager_not_ready(
 def test_non_message_ax25_frame_is_ignored(
     tmp_path, fake_connection_manager, running_event_loop
 ):
-    bridge, conn, sent_rf_frames = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     registry.add_registration(conn, "WU2Z", "!aabbccdd")
 
     # A position report, not a message -- info field doesn't start with ':'.
@@ -158,5 +187,69 @@ def test_non_message_ax25_frame_is_ignored(
 
 
 def test_malformed_ax25_bytes_do_not_raise(tmp_path, fake_connection_manager, running_event_loop):
-    bridge, _conn, _sent = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    bridge, _conn, _sent, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     bridge.on_ax25_frame(b"\x00\x01\x02not a real ax25 frame")  # must not raise
+
+
+def test_duplicate_rf_frame_delivered_only_once(tmp_path, fake_connection_manager, running_event_loop):
+    # Regression guard for the exact behavior observed live: Direwolf's
+    # multi-demodulator diversity reception delivered the identical
+    # inbound APRS message twice with the same timestamp.
+    bridge, conn, _sent, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    frame = _build_rf_frame("WU2Z", "Testing", msgno="003")
+    bridge.on_ax25_frame(frame)
+    bridge.on_ax25_frame(frame)  # identical frame, as if heard twice
+
+    time.sleep(0.2)
+    assert len(fake_connection_manager.sent) == 1
+
+
+def test_ack_addressed_to_gateway_clears_ack_tracker(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, _sent, ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    ack_tracker.track("005", "WU2Z", b"some-kiss-frame-bytes")
+    assert ack_tracker.pending_count() == 1
+
+    ack_info = aprs_message.build_ack("W4BRD-13", "005")
+    ack_frame = ax25.build_ui_frame("APZ019", "WU2Z", ["WIDE1-1", "WIDE2-1"], ack_info)
+    bridge.on_ax25_frame(ack_frame)
+
+    assert ack_tracker.pending_count() == 0
+    # An ack addressed to us is never mesh-delivered or treated as a
+    # registration lookup -- it's purely ack-tracker bookkeeping.
+    time.sleep(0.2)
+    assert fake_connection_manager.sent == []
+
+
+def test_ack_for_unknown_msgno_does_not_raise_or_deliver(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, _conn, _sent, ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    ack_info = aprs_message.build_ack("W4BRD-13", "999")
+    ack_frame = ax25.build_ui_frame("APZ019", "WU2Z", ["WIDE1-1", "WIDE2-1"], ack_info)
+    bridge.on_ax25_frame(ack_frame)  # must not raise
+    time.sleep(0.1)
+    assert fake_connection_manager.sent == []
+
+
+def test_rate_limit_exceeded_drops_delivery(tmp_path, fake_connection_manager, running_event_loop):
+    bridge, conn, _sent, _ack_tracker = _make_bridge(
+        tmp_path,
+        fake_connection_manager,
+        running_event_loop,
+        rate_limit_per_min=6000.0,
+        rate_limit_burst=1000.0,
+        per_callsign_rate_limit_per_min=60.0,
+        per_callsign_rate_limit_burst=1.0,  # exactly one message allowed
+    )
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    bridge.on_ax25_frame(_build_rf_frame("WU2Z", "first", source="N0CALL-1"))
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+
+    bridge.on_ax25_frame(_build_rf_frame("WU2Z", "second", source="N0CALL-2"))
+    time.sleep(0.2)
+    assert len(fake_connection_manager.sent) == 1  # second delivery rate-limited

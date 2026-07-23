@@ -21,6 +21,13 @@ class BridgeConfig:
     digi_path: Tuple[str, ...]
     mesh_channel_index: int
     registry_db_path: str
+    dedupe_ttl_sec: float
+    rate_limit_per_min: float
+    rate_limit_burst: float
+    per_callsign_rate_limit_per_min: float
+    per_callsign_rate_limit_burst: float
+    ack_retry_intervals_sec: Tuple[float, ...]
+    ack_max_attempts: int
 
 
 _REQUIRED_FIELDS = {"tnc_mode", "tnc_host", "tnc_port", "gateway_callsign"}
@@ -58,6 +65,10 @@ def load_config(path: str) -> BridgeConfig:
     plugin_dir = os.path.dirname(os.path.abspath(path))
     registry_db_path = raw.get("registry_db_path") or os.path.join(plugin_dir, "registrations.db")
 
+    ack_max_attempts = int(raw.get("ack_max_attempts", 4))
+    if ack_max_attempts < 1:
+        raise ConfigError("ack_max_attempts must be >= 1")
+
     return BridgeConfig(
         tnc_mode=raw["tnc_mode"],
         tnc_host=str(raw["tnc_host"]),
@@ -68,4 +79,15 @@ def load_config(path: str) -> BridgeConfig:
         digi_path=tuple(raw.get("digi_path", ["WIDE1-1", "WIDE2-1"])),
         mesh_channel_index=int(raw.get("mesh_channel_index", 0)),
         registry_db_path=registry_db_path,
+        # Dedupe / rate-limit / retry defaults: conservative enough for a
+        # single-station APRS/mesh gateway. Loop/dupe TTL of 30s matches
+        # what we observed Direwolf's own dedup behavior needs (diversity
+        # reception can double-deliver a single over-the-air packet).
+        dedupe_ttl_sec=float(raw.get("dedupe_ttl_sec", 30.0)),
+        rate_limit_per_min=float(raw.get("rate_limit_per_min", 20.0)),
+        rate_limit_burst=float(raw.get("rate_limit_burst", 10.0)),
+        per_callsign_rate_limit_per_min=float(raw.get("per_callsign_rate_limit_per_min", 6.0)),
+        per_callsign_rate_limit_burst=float(raw.get("per_callsign_rate_limit_burst", 3.0)),
+        ack_retry_intervals_sec=tuple(raw.get("ack_retry_intervals_sec", [30, 60, 120])),
+        ack_max_attempts=ack_max_attempts,
     )

@@ -112,7 +112,7 @@ def test_message_delivered_to_every_device_registered_under_the_callsign(
     assert _wait_until(lambda: len(fake_connection_manager.sent) == 2)
     destinations = {s["destinationId"] for s in fake_connection_manager.sent}
     assert destinations == {"!11111111", "!22222222"}
-    assert all(s["text"] == "Testing" for s in fake_connection_manager.sent)
+    assert all(s["text"] == "N0CALL-10: Testing" for s in fake_connection_manager.sent)
     # Still exactly one ack, not one per device -- it's one RF event.
     assert _wait_until(lambda: len(sent_rf_frames) == 1)
 
@@ -129,7 +129,7 @@ def test_message_to_registered_callsign_is_delivered_to_mesh(
     assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
     sent = fake_connection_manager.sent[0]
     assert sent["destinationId"] == "!aabbccdd"
-    assert sent["text"] == "Testing"
+    assert sent["text"] == "N0CALL-10: Testing"
     assert sent["channelIndex"] == 0
 
 
@@ -377,7 +377,7 @@ def test_message_addressed_to_gateway_callsign_still_delivers_if_registered(
     assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
     sent = fake_connection_manager.sent[0]
     assert sent["destinationId"] == "!aabbccdd"
-    assert sent["text"] == "Testing"
+    assert sent["text"] == "N0CALL-10: Testing"
     assert _wait_until(lambda: len(sent_rf_frames) == 1)  # still gets a normal ack
 
 
@@ -429,7 +429,7 @@ def test_message_reaches_mesh_node_by_short_name_when_not_a_registered_callsign(
     assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
     sent = fake_connection_manager.sent[0]
     assert sent["destinationId"] == "!aabbccdd"
-    assert sent["text"] == "hello there"
+    assert sent["text"] == "N0CALL-10: hello there"
 
 
 def test_registered_callsign_takes_priority_over_short_name_match(

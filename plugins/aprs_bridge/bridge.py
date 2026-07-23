@@ -23,8 +23,11 @@ class RfToMeshBridge:
     mesh node's short name -- this lets an RF sender reach an unlicensed
     mesh user directly (third-party relay; see mesh_bridge.py's
     docstring for the compliance model), the same way an unregistered
-    mesh sender can still reach RF. Sends an RF ACK back over the TNC if
-    the message carried a message number. Also the RX side of the
+    mesh sender can still reach RF. The text delivered to mesh is
+    prefixed with the RF sender's AX.25 source callsign ("N0CALL-10:
+    text") so the recipient can see who's messaging them. Sends an RF
+    ACK back over the TNC if the message carried a message number. Also
+    the RX side of the
     mesh->RF ACK loop: an incoming APRS message addressed to our own
     gateway callsign that decodes as "ackNNN" clears the matching
     pending send in ack_tracker instead of being treated as
@@ -162,12 +165,17 @@ class RfToMeshBridge:
             "aprs_bridge: RF->mesh %s -> %s (nodes %s): %r",
             frame.source, message.addressee, ", ".join(node_ids), message.text,
         )
+        # Prefix with the RF sender's callsign (mirrors the mesh->RF
+        # "CALLSIGN: text" / "via <name>: text" attribution) so the mesh
+        # recipient can see who's messaging them -- without it there's no
+        # way to tell one RF correspondent from another.
+        mesh_text = f"{frame.source}: {message.text}"
         # A callsign may have several registered devices (e.g. an
         # operator running more than one mesh node); one incoming RF
         # message counts as one rate-limited/acked event regardless, and
         # fans out to every device registered under that callsign.
         for node_id in node_ids:
-            asyncio.run_coroutine_threadsafe(self._deliver(node_id, message.text), self._loop)
+            asyncio.run_coroutine_threadsafe(self._deliver(node_id, mesh_text), self._loop)
 
         if message.msgno is not None:
             self._send_ack(frame.source, message.msgno)

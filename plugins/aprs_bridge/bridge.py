@@ -23,7 +23,13 @@ class RfToMeshBridge:
     the matching pending send in ack_tracker instead of being treated as
     mesh-deliverable traffic. Runs on the TNC RX thread via
     on_ax25_frame(); mesh delivery is scheduled onto the MeshDash event
-    loop since connection_manager.sendText is a coroutine."""
+    loop since connection_manager.sendText is a coroutine.
+
+    A duplicate/retried receipt of an already-delivered message (a
+    digipeated repeat, or the sender retrying because our first ack
+    never reached them) is re-acked but not re-delivered: without this,
+    a lost ack would leave the RF sender retrying indefinitely, since
+    APRS has no other way for them to learn we got it."""
 
     def __init__(
         self,
@@ -63,11 +69,6 @@ class RfToMeshBridge:
             self._logger.debug("aprs_bridge: malformed APRS message from %s: %s", frame.source, exc)
             return
 
-        signature = (frame.source, message.addressee, message.text, message.msgno)
-        if self._dedupe.seen_or_mark(signature):
-            self._logger.debug("aprs_bridge: dropping duplicate RF frame %r", signature)
-            return
-
         if message.addressee == self._cfg.gateway_callsign:
             acked_msgno = aprs_message.parse_ack(message)
             if acked_msgno is not None:
@@ -89,13 +90,38 @@ class RfToMeshBridge:
             )
             return
 
+        signature = (frame.source, message.addressee, message.text, message.msgno)
+        if self._dedupe.seen(signature):
+            # Same message already delivered -- most commonly a
+            # digipeated repeat (same content, different AX.25 path) or
+            # the sender retrying because our first ack was lost. Don't
+            # re-deliver to mesh, but DO re-ack: an un-acked retry would
+            # otherwise have the sender retry forever. Slide the TTL
+            # forward so a burst of retries keeps getting acked rather
+            # than the window expiring mid-retry-sequence and causing a
+            # second real mesh delivery.
+            self._dedupe.mark(signature)
+            if message.msgno is not None:
+                self._logger.debug(
+                    "aprs_bridge: re-acking duplicate/retried message %s from %s (no re-delivery)",
+                    message.msgno, frame.source,
+                )
+                self._send_ack(frame.source, message.msgno)
+            return
+
         if not self._rate_limiter.allow(message.addressee):
             self._logger.warning(
                 "aprs_bridge: rate limit exceeded delivering to %s; dropping RF message",
                 message.addressee,
             )
+            # Deliberately not marking dedupe here: an undelivered,
+            # rate-limited message was never acked, so a genuine retry
+            # must be free to try again (and succeed) once the rate
+            # limit window reopens, rather than being mistaken for an
+            # already-delivered duplicate.
             return
 
+        self._dedupe.mark(signature)
         self._logger.info(
             "aprs_bridge: RF->mesh %s -> %s (node %s): %r",
             frame.source, message.addressee, node_id, message.text,

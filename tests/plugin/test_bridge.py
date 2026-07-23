@@ -231,6 +231,83 @@ def test_digipeated_repeat_with_different_path_delivered_only_once(
     assert len(fake_connection_manager.sent) == 1
 
 
+def test_duplicate_message_is_reacked_not_redelivered(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # If our first ack transmission is lost (RF collision, etc.), the
+    # sender's APRS client retries the message. Without re-acking that
+    # retry, the sender would retry forever -- this is the exact
+    # question this test answers "yes" to: does duplicate/retried mail
+    # still get acked so the sender's retry loop terminates.
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop
+    )
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    frame = _build_rf_frame("WU2Z", "Testing", msgno="003", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)  # first ack
+
+    bridge.on_ax25_frame(frame)  # sender retries, identical frame
+    assert _wait_until(lambda: len(sent_rf_frames) == 2)  # re-acked
+
+    # Still only delivered to mesh once.
+    time.sleep(0.1)
+    assert len(fake_connection_manager.sent) == 1
+
+    for ack_kiss_frame in sent_rf_frames:
+        _port, _cmd, ax25_bytes = kiss.decode_frame(ack_kiss_frame)
+        parsed = ax25.parse_ui_frame(ax25_bytes)
+        ack_message = aprs_message.decode_message(parsed.info)
+        assert ack_message.addressee == "N0CALL-10"
+        assert ack_message.text == "ack003"
+
+
+def test_message_without_msgno_is_not_reacked_on_retry(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop
+    )
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    frame = _build_rf_frame("WU2Z", "no msgno here")  # msgno=None
+    bridge.on_ax25_frame(frame)
+    bridge.on_ax25_frame(frame)
+
+    time.sleep(0.2)
+    assert len(fake_connection_manager.sent) == 1
+    assert sent_rf_frames == []  # nothing to ack -- no msgno was ever present
+
+
+def test_rate_limited_message_is_not_marked_seen_and_can_succeed_on_retry(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # A rate-limited (undelivered, unacked) attempt must not be mistaken
+    # for an already-delivered duplicate -- otherwise a legitimate retry
+    # would get silently "re-acked" for a message that was never
+    # actually delivered, or never get another chance to go through.
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path,
+        fake_connection_manager,
+        running_event_loop,
+        per_callsign_rate_limit_per_min=60.0,
+        per_callsign_rate_limit_burst=1.0,
+    )
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    bridge.on_ax25_frame(_build_rf_frame("WU2Z", "first", msgno="001", source="N0CALL-1"))
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)  # ack for the first, successful message
+
+    # Second, different message from a different sender: rate-limited
+    # (bucket capacity is 1), so must not be delivered or acked.
+    bridge.on_ax25_frame(_build_rf_frame("WU2Z", "second", msgno="002", source="N0CALL-2"))
+    time.sleep(0.2)
+    assert len(fake_connection_manager.sent) == 1
+    assert len(sent_rf_frames) == 1  # no ack added for the rate-limited attempt
+
+
 def test_ack_addressed_to_gateway_clears_ack_tracker(
     tmp_path, fake_connection_manager, running_event_loop
 ):

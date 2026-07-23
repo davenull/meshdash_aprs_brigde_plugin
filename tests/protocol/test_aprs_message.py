@@ -90,3 +90,25 @@ def test_decode_message_malformed_addressee_framing_raises():
     # Byte 10 should be ':'; here it's 'X' instead.
     with pytest.raises(AprsMessageError):
         aprs_message.decode_message(b":WU2Z     Xhello")
+
+
+def test_decode_message_strips_trailing_cr_from_real_ack():
+    # Real bytes captured live from an actual station's ack: some
+    # radios/software append a trailing CR to the info field. Without
+    # stripping it, this decoded msgno="001\r", which never matched the
+    # tracked "001" and silently failed to clear the pending ack.
+    real_ack_info = bytes.fromhex("3a57344252442d3133203a61636b3030310d")
+    assert real_ack_info == b":W4BRD-13 :ack001\r"
+    msg = aprs_message.decode_message(real_ack_info)
+    assert msg == AprsMessage(addressee="W4BRD-13", text="ack001", msgno=None)
+    assert aprs_message.parse_ack(msg) == "001"
+
+
+def test_decode_message_strips_trailing_crlf_from_ordinary_text():
+    msg = aprs_message.decode_message(b":WU2Z     :Testing\r\n")
+    assert msg.text == "Testing"
+
+
+def test_decode_message_strips_trailing_cr_after_explicit_msgno():
+    msg = aprs_message.decode_message(b":WU2Z     :Testing{003\r")
+    assert msg == AprsMessage(addressee="WU2Z", text="Testing", msgno="003")

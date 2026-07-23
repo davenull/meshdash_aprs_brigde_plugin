@@ -66,7 +66,14 @@ def decode_message(info: bytes) -> AprsMessage:
         raise AprsMessageError("malformed addressee framing (expected ':' at byte 10)")
 
     addressee = info[1 : _ADDRESSEE_WIDTH + 1].decode("ascii").strip()
-    raw_tail = info[_ADDRESSEE_WIDTH + 2 :]
+    # Some radios/software append a trailing CR (occasionally CRLF) to the
+    # info field -- confirmed live against a real ack from a station in
+    # the wild: ":W4BRD-13 :ack001\r". Not part of the APRS message
+    # content; stripped before any parsing so it can't corrupt a msgno
+    # (an unstripped "\r" made "ack001\r" parse as msgno "001\r", which
+    # then never matched the tracked "001" and silently failed to clear
+    # the pending ack).
+    raw_tail = info[_ADDRESSEE_WIDTH + 2 :].rstrip(b"\r\n")
 
     text = raw_tail
     msgno: Optional[bytes] = None

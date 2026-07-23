@@ -192,15 +192,40 @@ def test_malformed_ax25_bytes_do_not_raise(tmp_path, fake_connection_manager, ru
 
 
 def test_duplicate_rf_frame_delivered_only_once(tmp_path, fake_connection_manager, running_event_loop):
-    # Regression guard for the exact behavior observed live: Direwolf's
-    # multi-demodulator diversity reception delivered the identical
-    # inbound APRS message twice with the same timestamp.
+    # Two byte-identical KISS/AX.25 frames, as if the same over-the-air
+    # transmission were decoded twice (e.g. a multi-demodulator TNC).
     bridge, conn, _sent, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
     registry.add_registration(conn, "WU2Z", "!aabbccdd")
 
     frame = _build_rf_frame("WU2Z", "Testing", msgno="003")
     bridge.on_ax25_frame(frame)
     bridge.on_ax25_frame(frame)  # identical frame, as if heard twice
+
+    time.sleep(0.2)
+    assert len(fake_connection_manager.sent) == 1
+
+
+def test_digipeated_repeat_with_different_path_delivered_only_once(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # Regression guard for the actual behavior observed live: the same
+    # message arrived twice via the user's own W4BRD-1 digipeater -- a
+    # direct copy and a digipeated repeat, which are two genuinely
+    # different AX.25 frames (different path) carrying identical APRS
+    # message content. Dedup is content-based (source, addressee, text,
+    # msgno), not path-based, precisely so this case is still caught.
+    bridge, conn, _sent, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    info = aprs_message.encode_message("WU2Z", "Testing", "003")
+    direct_frame = ax25.build_ui_frame("APZ019", "N0CALL-10", ["WIDE1-1", "WIDE2-1"], info)
+    digipeated_frame = ax25.build_ui_frame(
+        "APZ019", "N0CALL-10", ["W4BRD-1*", "WIDE2-1"], info
+    )
+    assert direct_frame != digipeated_frame  # genuinely different frames
+
+    bridge.on_ax25_frame(direct_frame)
+    bridge.on_ax25_frame(digipeated_frame)
 
     time.sleep(0.2)
     assert len(fake_connection_manager.sent) == 1

@@ -8,11 +8,18 @@ class DedupeCache:
     """TTL-based signature cache for suppressing duplicate traffic.
 
     Two things this exists for, per CLAUDE.md:
-    - Loop/dupe suppression: a TNC with multiple demodulators (or a
-      digipeated retransmission) commonly delivers the same over-the-air
-      packet more than once. Confirmed live: Direwolf's diversity
-      reception logged the identical inbound APRS message twice with the
-      same timestamp.
+    - Loop/dupe suppression: the same logical APRS message commonly
+      arrives more than once -- most plainly via a digipeat (the direct
+      copy and the digipeated copy are two distinct AX.25 frames with
+      different paths carrying identical message content), but a TNC
+      with multiple demodulators can also decode one over-the-air
+      transmission twice. Confirmed live: the same inbound APRS message
+      was processed twice with the same timestamp (via the user's own
+      W4BRD-1 digipeater repeating it -- not confirmed to be diversity
+      reception as originally guessed). Dedup is intentionally
+      content-based (source, addressee, text, msgno), not path-based,
+      since both causes are the same logical message and should only be
+      delivered once regardless of which path(s) it arrived by.
     - Self-origination guard: mark() our own outbound frames' signatures
       so that if we hear them again (TNC TX echo, digipeat loopback),
       seen() reports them as already-seen instead of re-gating our own

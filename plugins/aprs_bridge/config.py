@@ -80,9 +80,10 @@ def load_config(path: str) -> BridgeConfig:
         mesh_channel_index=int(raw.get("mesh_channel_index", 0)),
         registry_db_path=registry_db_path,
         # Dedupe / rate-limit / retry defaults: conservative enough for a
-        # single-station APRS/mesh gateway. Loop/dupe TTL of 30s matches
-        # what we observed Direwolf's own dedup behavior needs (diversity
-        # reception can double-deliver a single over-the-air packet).
+        # single-station APRS/mesh gateway. 30s loop/dupe TTL comfortably
+        # covers a digipeated repeat of the same message arriving shortly
+        # after the direct copy (observed live via the user's own
+        # W4BRD-1 digipeater).
         dedupe_ttl_sec=float(raw.get("dedupe_ttl_sec", 30.0)),
         rate_limit_per_min=float(raw.get("rate_limit_per_min", 20.0)),
         rate_limit_burst=float(raw.get("rate_limit_burst", 10.0)),

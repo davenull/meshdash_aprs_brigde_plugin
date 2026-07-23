@@ -35,10 +35,15 @@ class RfToMeshBridge:
        most recently (registry.last_active_node) -- falling back to
        every device if none has ever sent, or the last-active one was
        since unregistered.
-    3. Addressed to something matching a live mesh node's short name --
-       lets an RF sender reach an unlicensed mesh user directly even
-       without a prior conversation or registration (third-party relay;
-       see mesh_bridge.py's docstring for the compliance model).
+    3. Addressed to something matching a live mesh node's short name, or
+       the last 4 hex chars of its node id (the same fallback code shown
+       as attribution when a node has no name -- see
+       mesh_bridge.py's _mesh_long_name) -- lets an RF sender reach an
+       unlicensed mesh user directly even without a prior conversation
+       or registration (third-party relay; see mesh_bridge.py's
+       docstring for the compliance model). The node-id code exists
+       because a Meshtastic short name can be arbitrary unicode (even
+       missing), which isn't always something an RF sender can type.
 
     The text delivered to mesh is prefixed with the RF sender's AX.25
     source callsign ("N0CALL-10: text") so the recipient can see who's
@@ -88,6 +93,22 @@ class RfToMeshBridge:
             user = (nd.get("user") or {}) if isinstance(nd, dict) else {}
             short_name = user.get("shortName") or nd.get("short_name") or ""
             if short_name.strip().upper() == name_upper:
+                return node_id
+        return None
+
+    def _lookup_node_by_code(self, name: str) -> Optional[str]:
+        """Matches the last 4 hex chars of a node's id -- the same
+        fallback code mesh_bridge.py's _mesh_long_name uses as
+        attribution when a node has no long/short name set. Unlike a
+        Meshtastic short name (which can be arbitrary, even non-ASCII,
+        unicode, or missing), this is always present, always ASCII, and
+        always short enough to type on RF -- so it's the reliable way
+        for an RF sender to reach a specific node without needing to
+        know (or be able to type) its display name."""
+        nodes = getattr(self._meshtastic_data, "nodes", {}) or {}
+        name_upper = name.strip().upper()
+        for node_id in nodes:
+            if node_id and node_id[-4:].upper() == name_upper:
                 return node_id
         return None
 
@@ -155,11 +176,16 @@ class RfToMeshBridge:
 
         if not node_ids:
             # Not a registered callsign -- also allow reaching a mesh
-            # node directly by its live short name, so an RF sender can
-            # message an unlicensed mesh user too (third-party relay;
-            # gateway_callsign remains the sole RF transmission
-            # attribution regardless of who receives).
-            matched_node = self._lookup_node_by_short_name(message.addressee)
+            # node directly by its live short name, or by its 4-hex-char
+            # node-id code (see _lookup_node_by_code), so an RF sender
+            # can message an unlicensed mesh user too (third-party
+            # relay; gateway_callsign remains the sole RF transmission
+            # attribution regardless of who receives). The code is
+            # checked second since a short name match is more likely to
+            # be what the sender actually meant to type.
+            matched_node = self._lookup_node_by_short_name(
+                message.addressee
+            ) or self._lookup_node_by_code(message.addressee)
             node_ids = [matched_node] if matched_node else []
 
         if not node_ids:

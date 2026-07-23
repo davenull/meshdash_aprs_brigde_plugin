@@ -6,7 +6,7 @@ A [MeshDash](https://meshdash.co.uk/) plugin that bidirectionally bridges APRS R
 
 ## What it does
 
-- **RF → mesh**: An APRS message addressed to your registered callsign (or directly to a live Meshtastic node's short name) is delivered to the corresponding mesh device(s) as a direct message, prefixed with the sending station's callsign so the mesh recipient knows who's messaging them.
+- **RF → mesh**: An APRS message addressed to your registered callsign, a live Meshtastic node's short name, or a node's 4-hex-char id code is delivered to the corresponding mesh device(s) as a direct message, prefixed with the sending station's callsign so the mesh recipient knows who's messaging them.
 - **Mesh → RF**: A Meshtastic user DMs the gateway node with `CALLSIGN: message text` (or just `message text` to reply to their last correspondent), and it goes out as a real APRS message on RF, attributed by the AX.25 source callsign (see below) and identified in the text by the sender's mesh name.
 - **Registration**: `!register CALLSIGN-SSID` / `!unregister`, sent as a mesh DM, links a Meshtastic node to a callsign so RF stations can reach it by that callsign directly. Registration is optional — see below. This convention follows [aprstastic](https://github.com/afourney/aprstastic), the prior-art reference this project builds on.
 - **Third-party relay**: Unregistered/unlicensed mesh users can still send and receive messages over RF. They're identified by their mesh device's name instead of a callsign, and the AX.25 source is always the gateway operator's own licensed callsign — this is the FCC §97.115 third-party-traffic model (a licensed control operator relaying communications on behalf of others), not a claim that every mesh user is individually licensed.
@@ -98,12 +98,12 @@ Configuration can also be viewed and edited from the web UI's Config tab; change
   ```
 - **Reply to whoever you last messaged**, by just sending text with no `CALLSIGN:` prefix.
 
-Unregistered nodes can do all of the above except receive messages addressed specifically to a callsign — an RF sender can still reach them directly by mesh short name, or by simply replying to a message they sent.
+Unregistered nodes can do all of the above except receive messages addressed specifically to a callsign — an RF sender can still reach them directly by mesh short name or node-id code (see below), or by simply replying to a message they sent.
 
 ### From the RF side
 
 - Send a normal APRS message addressed to a registered callsign, and it's delivered to every Meshtastic device registered under that callsign (or the single most-recently-active one, if there are several).
-- Send a message addressed to a live mesh node's short name to reach an unregistered node directly.
+- Send a message addressed to a live mesh node's short name, or to the last 4 hex characters of its node id (e.g. a node `!a1b2c3d4` is reachable as `C3D4`), to reach an unregistered node directly. The node-id code is the more reliable option — a Meshtastic short name can be arbitrary unicode or unset, but the code is always ASCII, always present, and it's the same code you'll see as the sender's name on a message from a node that has no short/long name configured.
 - Reply to a message you received from the gateway, and it's routed back to whichever mesh device the conversation belongs to — this works even if that device was never registered.
 
 ## Testing

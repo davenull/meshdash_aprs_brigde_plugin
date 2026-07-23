@@ -521,3 +521,42 @@ def test_registered_callsign_takes_priority_over_short_name_match(
     assert fake_connection_manager.sent[0]["destinationId"] == "!aabbccdd"  # registered node, not the name match
 
 
+def test_message_reaches_mesh_node_by_node_id_code_when_unnamed(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # A node with no short name set (or one an RF sender can't type --
+    # Meshtastic short names can be arbitrary unicode) can still be
+    # reached by the last 4 hex chars of its node id, the same fallback
+    # code shown as mesh->RF attribution for unnamed nodes.
+    bridge, _conn, _sent, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!aabbccdd": {}},
+    )
+
+    frame = _build_rf_frame("CCDD", "hello there")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    sent = fake_connection_manager.sent[0]
+    assert sent["destinationId"] == "!aabbccdd"
+    assert sent["text"] == "N0CALL-10: hello there"
+
+
+def test_short_name_match_takes_priority_over_node_id_code(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, _conn, _sent, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={
+            "!aabbccdd": {},  # code CCDD
+            "!11ccdd22": {"user": {"shortName": "CCDD"}},  # name happens to equal that code
+        },
+    )
+
+    frame = _build_rf_frame("CCDD", "hello there")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert fake_connection_manager.sent[0]["destinationId"] == "!11ccdd22"  # short-name match wins
+
+

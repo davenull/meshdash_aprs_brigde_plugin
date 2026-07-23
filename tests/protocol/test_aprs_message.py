@@ -62,6 +62,35 @@ def test_build_ack():
     assert aprs_message.build_ack("WU2Z", "003") == b":WU2Z     :ack003"
 
 
+def test_build_third_party_ack():
+    wrapped = aprs_message.build_third_party_ack("PGR", "N0CALL-10", "003", "APZBRD")
+    assert wrapped == b"}PGR>APZBRD:" + b":N0CALL-10:ack003"
+
+
+def test_build_third_party_ack_inner_payload_decodes_normally():
+    # The part after the third-party header ("}SRC>DST:") is a normal,
+    # independently valid ack payload -- a client that ignores/strips
+    # third-party framing but still parses the remainder would see a
+    # well-formed ack, not garbage.
+    wrapped = aprs_message.build_third_party_ack("PGR", "N0CALL-10", "003", "APZBRD")
+    header, inner_info = wrapped.split(b":", 1)
+    assert header == b"}PGR>APZBRD"
+    decoded = aprs_message.decode_message(inner_info)
+    assert aprs_message.parse_ack(decoded) == "003"
+
+
+@pytest.mark.parametrize("bad_value", [">", ":", "N0\r10", "N0\n10", ""])
+def test_build_third_party_ack_rejects_unusable_claimed_source(bad_value):
+    with pytest.raises(AprsMessageError):
+        aprs_message.build_third_party_ack(bad_value, "N0CALL-10", "003", "APZBRD")
+
+
+@pytest.mark.parametrize("bad_value", [">", ":", ""])
+def test_build_third_party_ack_rejects_unusable_tocall(bad_value):
+    with pytest.raises(AprsMessageError):
+        aprs_message.build_third_party_ack("PGR", "N0CALL-10", "003", bad_value)
+
+
 def test_parse_ack_on_ack_message():
     ack_info = aprs_message.build_ack("WU2Z", "003")
     msg = aprs_message.decode_message(ack_info)

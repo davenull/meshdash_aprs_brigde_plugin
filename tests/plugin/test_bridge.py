@@ -326,9 +326,16 @@ def test_message_with_msgno_triggers_rf_ack(
     port, command, ax25_bytes = kiss.decode_frame(ack_kiss_frame)
     assert (port, command) == (0, 0)
     parsed = ax25.parse_ui_frame(ax25_bytes)
-    assert parsed.source == "W4BRD-13"
+    assert parsed.source == "W4BRD-13"  # AX.25 source is always the gateway's own callsign
     assert parsed.destination == "APZBRD"
-    ack_message = aprs_message.decode_message(parsed.info)
+    # The message was addressed to WU2Z, not gateway_callsign -- the ack
+    # is third-party-wrapped (see aprs_message.build_third_party_ack) so
+    # standard APRS ack-matching on N0CALL-10's end recognizes it as
+    # coming "from" WU2Z, the station it actually addressed.
+    assert parsed.info == b"}WU2Z>APZBRD::N0CALL-10:ack003"
+    header, inner_info = parsed.info.split(b":", 1)
+    assert header == b"}WU2Z>APZBRD"
+    ack_message = aprs_message.decode_message(inner_info)
     assert ack_message.addressee == "N0CALL-10"
     assert ack_message.text == "ack003"
 
@@ -452,7 +459,9 @@ def test_duplicate_message_is_reacked_not_redelivered(
     for ack_kiss_frame in sent_rf_frames:
         _port, _cmd, ax25_bytes = kiss.decode_frame(ack_kiss_frame)
         parsed = ax25.parse_ui_frame(ax25_bytes)
-        ack_message = aprs_message.decode_message(parsed.info)
+        # Addressed to WU2Z, not gateway_callsign -- third-party-wrapped.
+        _header, inner_info = parsed.info.split(b":", 1)
+        ack_message = aprs_message.decode_message(inner_info)
         assert ack_message.addressee == "N0CALL-10"
         assert ack_message.text == "ack003"
 
@@ -543,6 +552,15 @@ def test_message_addressed_to_gateway_callsign_still_delivers_if_registered(
     assert sent["text"] == "N0CALL-10: Testing"
     assert _wait_until(lambda: len(sent_rf_frames) == 1)  # still gets a normal ack
 
+    # Addressed to gateway_callsign itself -- the ack legitimately is
+    # "from" us, so it's a plain ack, not third-party-wrapped.
+    _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
+    parsed = ax25.parse_ui_frame(ax25_bytes)
+    assert parsed.info[0:1] == b":"
+    ack_message = aprs_message.decode_message(parsed.info)
+    assert ack_message.addressee == "N0CALL-10"
+    assert ack_message.text == "ack003"
+
 
 def test_message_to_gateway_callsign_routes_by_conversation_history(
     tmp_path, fake_connection_manager, running_event_loop
@@ -630,6 +648,29 @@ def test_message_reaches_mesh_node_by_short_name_when_not_a_registered_callsign(
     sent = fake_connection_manager.sent[0]
     assert sent["destinationId"] == "!aabbccdd"
     assert sent["text"] == "N0CALL-10: hello there"
+
+
+def test_ack_for_short_name_addressed_message_is_third_party_wrapped(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # The originally reported bug: addressed to a mesh short name (not a
+    # registered callsign, not gateway_callsign), a plain same-source ack
+    # left two different real APRS clients retransmitting indefinitely,
+    # since standard ack-matching expects the ack to come from whoever
+    # the message was addressed to.
+    bridge, _conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!aabbccdd": {"user": {"shortName": "PGR"}}},
+    )
+
+    frame = _build_rf_frame("PGR", "hello there", msgno="007", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+    _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
+    parsed = ax25.parse_ui_frame(ax25_bytes)
+    assert parsed.source == "W4BRD-13"  # AX.25 source is still always the gateway
+    assert parsed.info == b"}PGR>APZBRD::N0CALL-10:ack007"
 
 
 def test_registered_callsign_takes_priority_over_short_name_match(

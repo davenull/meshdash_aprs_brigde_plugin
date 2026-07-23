@@ -96,6 +96,28 @@ def build_ack(addressee: str, msgno: str) -> bytes:
     return encode_message(addressee, "ack" + msgno, msgno=None)
 
 
+def build_third_party_ack(claimed_source: str, addressee: str, msgno: str, tocall: str) -> bytes:
+    """Wraps an ack in APRS third-party-traffic format ("}SRC>DST:payload"),
+    the same mechanism APRS-IS igates use to relay a packet under their own
+    AX.25 source while presenting a different logical originating station.
+    Standard APRS ack-matching on the sending station's end expects an ack
+    to come from the callsign it addressed its message to; when that
+    addressee isn't our own gateway_callsign (a mesh short name, node-id
+    code, or any other third-party target) the sender won't recognize a
+    plain ack (always sourced from gateway_callsign, per the hard
+    compliance invariant) as satisfying its pending send, and keeps
+    retransmitting. This lets the ack claim to be "from" claimed_source in
+    the payload while the caller's actual AX.25 frame source is still
+    whatever it legally has to be -- this function only builds the info
+    field, it has no bearing on RF station identification."""
+    for label, value in (("claimed_source", claimed_source), ("tocall", tocall)):
+        if not value or any(ch in value for ch in (">", ":", "\r", "\n")):
+            raise AprsMessageError(f"{label} {value!r} is not usable in a third-party header")
+    inner = build_ack(addressee, msgno)
+    header = f"}}{claimed_source}>{tocall}:".encode("ascii")
+    return header + inner
+
+
 def parse_ack(msg: AprsMessage) -> Optional[str]:
     if msg.msgno is not None:
         return None

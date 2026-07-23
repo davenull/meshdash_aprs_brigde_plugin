@@ -55,7 +55,15 @@ class RfToMeshBridge:
     The text delivered to mesh is prefixed with the RF sender's AX.25
     source callsign ("N0CALL-10: text") so the recipient can see who's
     messaging them. Sends an RF ACK back over the TNC if the message
-    carried a message number. Also the RX side of the
+    carried a message number -- as a plain ack (source=gateway_callsign)
+    when the message was addressed to gateway_callsign itself, or wrapped
+    in APRS third-party-traffic format ("}ADDRESSEE>TOCALL:...", see
+    aprs_message.build_third_party_ack) otherwise, since standard APRS
+    ack-matching on the sender's end expects the ack to come from
+    whatever it addressed the message to -- confirmed live, on two
+    different APRS clients, that a same-source ack for a message
+    addressed to a mesh short name/node-id code left the sender
+    retransmitting indefinitely despite having been acked. Also the RX side of the
     mesh->RF ACK loop: an incoming APRS message addressed to our own
     gateway callsign that decodes as "ackNNN" clears the matching
     pending send in ack_tracker instead of being treated as
@@ -243,7 +251,7 @@ class RfToMeshBridge:
                     "aprs_bridge: re-acking duplicate/retried message %s from %s (no re-delivery)",
                     message.msgno, frame.source,
                 )
-                self._send_ack(frame.source, message.msgno)
+                self._send_ack(frame.source, message.msgno, message.addressee)
             return
 
         if not self._rate_limiter.allow(message.addressee):
@@ -289,7 +297,7 @@ class RfToMeshBridge:
         asyncio.run_coroutine_threadsafe(self._deliver_to_all(node_ids, mesh_text), self._loop)
 
         if message.msgno is not None:
-            self._send_ack(frame.source, message.msgno)
+            self._send_ack(frame.source, message.msgno, message.addressee)
 
     async def _deliver_to_all(self, node_ids: List[str], text: str) -> None:
         # Delivered one at a time, awaited in sequence with a short gap
@@ -332,9 +340,24 @@ class RfToMeshBridge:
         except Exception:
             self._logger.exception("aprs_bridge: sendText to %s failed", node_id)
 
-    def _send_ack(self, rf_recipient_callsign: str, msgno: str) -> None:
+    def _send_ack(self, rf_recipient_callsign: str, msgno: str, original_addressee: str) -> None:
         ack_text = "ack" + msgno
-        ack_info = aprs_message.build_ack(rf_recipient_callsign, msgno)
+        if original_addressee == self._cfg.gateway_callsign:
+            ack_info = aprs_message.build_ack(rf_recipient_callsign, msgno)
+        else:
+            # The message was addressed to something other than us (a mesh
+            # short name, node-id code, or another registered callsign) --
+            # standard APRS ack-matching on the sender's end expects the
+            # ack to come from the callsign it addressed, not from us.
+            # Wrap it in third-party-traffic format so the payload claims
+            # to be "from" original_addressee, while the AX.25 frame
+            # itself (built below) still has to carry the gateway's own
+            # callsign as its real source regardless -- confirmed live
+            # that a plain same-source ack here left the sender retrying
+            # indefinitely, on two different APRS clients.
+            ack_info = aprs_message.build_third_party_ack(
+                original_addressee, rf_recipient_callsign, msgno, self._cfg.aprs_tocall
+            )
         ax25_frame = ax25.build_ui_frame(
             self._cfg.aprs_tocall,
             self._cfg.gateway_callsign,

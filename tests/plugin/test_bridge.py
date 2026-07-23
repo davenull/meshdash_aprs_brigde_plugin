@@ -191,6 +191,39 @@ def test_all_prefix_overrides_conversation_history_when_addressed_to_gateway_cal
     assert destinations == {"!11111111", "!22222222"}
 
 
+def test_fanout_deliveries_are_sequenced_not_concurrent(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # Regression guard: firing one independent, unawaited
+    # run_coroutine_threadsafe per node let sendText calls to different
+    # destinations race each other and silently drop one -- confirmed
+    # live under clean RF with nothing else to blame. Deliveries to
+    # multiple devices must be strictly sequenced (one in flight at a
+    # time), never overlapping.
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "W4BRD-13", "!11111111")
+    registry.add_registration(conn, "W4BRD-13", "!22222222")
+
+    in_flight = []
+    overlaps = []
+
+    async def tracking_send_text(text, destinationId, channelIndex=0, wantAck=False):
+        if in_flight:
+            overlaps.append((in_flight[0], destinationId))
+        in_flight.append(destinationId)
+        await asyncio.sleep(0.05)
+        in_flight.remove(destinationId)
+        fake_connection_manager.sent.append({"text": text, "destinationId": destinationId})
+
+    fake_connection_manager.sendText = tracking_send_text
+
+    frame = _build_rf_frame("W4BRD-13", "!ALL test", msgno="003")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 2)
+    assert overlaps == []
+
+
 def test_message_falls_back_to_fan_out_when_last_active_device_unregistered(
     tmp_path, fake_connection_manager, running_event_loop
 ):

@@ -14,6 +14,8 @@ from .protocol.errors import ProtocolError
 from .protocol.ratelimit import RateLimiter
 from . import registry
 
+_FANOUT_DELAY_SEC = 0.5  # gap between sequential deliveries to multiple devices.
+
 
 class RfToMeshBridge:
     """RF -> mesh. Three ways an incoming APRS message gets routed to a
@@ -61,7 +63,13 @@ class RfToMeshBridge:
     pending send in ack_tracker instead of being treated as
     mesh-deliverable traffic. Runs on the TNC RX thread via
     on_ax25_frame(); mesh delivery is scheduled onto the MeshDash event
-    loop since connection_manager.sendText is a coroutine.
+    loop since connection_manager.sendText is a coroutine. When more
+    than one device is targeted (fan-out or "!ALL"), deliveries are
+    sequenced one at a time with a short gap (_deliver_to_all,
+    _FANOUT_DELAY_SEC) rather than fired concurrently -- confirmed live
+    that concurrent sendText calls to different destinations can race
+    and silently drop one of them, under clean RF with nothing else to
+    blame.
 
     A duplicate/retried receipt of an already-delivered message (a
     digipeated repeat, or the sender retrying because our first ack
@@ -264,22 +272,39 @@ class RfToMeshBridge:
         # A callsign may have several registered devices (e.g. an
         # operator running more than one mesh node); one incoming RF
         # message counts as one rate-limited/acked event regardless, and
-        # fans out to every device registered under that callsign.
+        # fans out to every device registered under that callsign. Record
+        # last_correspondent for every recipient up front (cheap, purely
+        # local) so it's set correctly even if delivery to some of them
+        # is still pending -- keyed the same way mesh_bridge.py computes
+        # identity_key (registered callsign if any, else the node id), so
+        # a bare-text reply from them, with no "CALLSIGN:" prefix, goes
+        # straight back to whoever just messaged them. Without this, a
+        # mesh node's very first reply to an RF message would fail ("No
+        # recipient given and no prior correspondent") even though we
+        # just told them exactly who's messaging them.
         for node_id in node_ids:
-            asyncio.run_coroutine_threadsafe(self._deliver(node_id, mesh_text), self._loop)
-            # Record frame.source as this recipient's last correspondent
-            # (keyed the same way mesh_bridge.py computes identity_key --
-            # registered callsign if any, else the node id) so a bare-
-            # text reply from them, with no "CALLSIGN:" prefix, goes
-            # straight back to whoever just messaged them. Without this,
-            # a mesh node's very first reply to an RF message would fail
-            # ("No recipient given and no prior correspondent") even
-            # though we just told them exactly who's messaging them.
             recipient_identity = registry.lookup_callsign_for_node(self._registry_conn, node_id) or node_id
             registry.set_last_correspondent(self._registry_conn, recipient_identity, frame.source)
+        asyncio.run_coroutine_threadsafe(self._deliver_to_all(node_ids, mesh_text), self._loop)
 
         if message.msgno is not None:
             self._send_ack(frame.source, message.msgno)
+
+    async def _deliver_to_all(self, node_ids: List[str], text: str) -> None:
+        # Delivered one at a time, awaited in sequence with a short gap
+        # between each -- not fired concurrently. Confirmed live: firing
+        # one run_coroutine_threadsafe per node (independent, unawaited)
+        # let sendText calls to different destinations race each other,
+        # and one node's message never arrived at all under clean RF
+        # conditions with nothing else to blame. Sequencing them removes
+        # that race regardless of what's happening inside
+        # connection_manager/the local radio's send queue; the pacing gap
+        # additionally avoids stacking sends faster than the one physical
+        # radio link can actually clear them.
+        for i, node_id in enumerate(node_ids):
+            if i > 0:
+                await asyncio.sleep(_FANOUT_DELAY_SEC)
+            await self._deliver(node_id, text)
 
     async def _deliver(self, node_id: str, text: str) -> None:
         if not self._cm.is_ready.is_set():

@@ -145,11 +145,41 @@ def test_add_list_remove_registration_round_trip(client_module, tmp_path):
     assert regs[0]["callsign"] == "WU2Z"
     assert regs[0]["node_id"] == "!aabbccdd"
 
-    resp = client.delete("/registrations/WU2Z")
+    resp = client.delete("/registrations/by-node/!aabbccdd")
     assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "callsign": "WU2Z", "node_id": "!aabbccdd"}
 
     resp = client.get("/registrations")
     assert resp.json()["registrations"] == []
+
+
+def test_remove_registration_by_node_404_when_not_registered(client_module, tmp_path):
+    module, client = client_module
+    _populate_ready_state(module, tmp_path)
+
+    resp = client.delete("/registrations/by-node/!doesnotexist")
+    assert resp.status_code == 404
+
+
+def test_multiple_devices_can_register_under_the_same_callsign(client_module, tmp_path):
+    module, client = client_module
+    _populate_ready_state(module, tmp_path)
+
+    client.post("/registrations", json={"callsign": "W4BRD-13", "node_id": "!11111111"})
+    client.post("/registrations", json={"callsign": "W4BRD-13", "node_id": "!22222222"})
+
+    resp = client.get("/registrations")
+    regs = resp.json()["registrations"]
+    assert len(regs) == 2
+    assert {r["node_id"] for r in regs} == {"!11111111", "!22222222"}
+    assert all(r["callsign"] == "W4BRD-13" for r in regs)
+
+    # Removing one device leaves the other registered under the same callsign.
+    client.delete("/registrations/by-node/!11111111")
+    resp = client.get("/registrations")
+    regs = resp.json()["registrations"]
+    assert len(regs) == 1
+    assert regs[0]["node_id"] == "!22222222"
 
 
 def test_add_registration_rejects_invalid_callsign(client_module, tmp_path):
@@ -166,6 +196,57 @@ def test_add_registration_rejects_node_id_without_bang(client_module, tmp_path):
 
     resp = client.post("/registrations", json={"callsign": "WU2Z", "node_id": "aabbccdd"})
     assert resp.status_code == 400
+
+
+# --- /mesh-nodes ---
+
+
+class _FakeMeshtasticData:
+    def __init__(self, nodes, local_node_id=None):
+        self.nodes = nodes
+        self.local_node_id = local_node_id
+
+
+def test_mesh_nodes_before_bootstrap_returns_empty(client_module):
+    _module, client = client_module
+    resp = client.get("/mesh-nodes")
+    assert resp.status_code == 200
+    assert resp.json() == {"nodes": []}
+
+
+def test_mesh_nodes_lists_known_nodes_excluding_local(client_module):
+    module, client = client_module
+    module._state["meshtastic_data"] = _FakeMeshtasticData(
+        nodes={
+            "!local0001": {"user": {"longName": "Gateway Radio"}, "lastHeard": 100},
+            "!aabbccdd": {"user": {"longName": "David's Pager", "shortName": "PGR"}, "lastHeard": 200},
+            "!11223344": {"long_name": "Base Station", "last_heard": 50},
+        },
+        local_node_id="!local0001",
+    )
+
+    resp = client.get("/mesh-nodes")
+    assert resp.status_code == 200
+    nodes = resp.json()["nodes"]
+    node_ids = {n["node_id"] for n in nodes}
+    assert node_ids == {"!aabbccdd", "!11223344"}  # local node excluded
+    pager = next(n for n in nodes if n["node_id"] == "!aabbccdd")
+    assert pager["long_name"] == "David's Pager"
+    assert pager["short_name"] == "PGR"
+    # Sorted newest-heard first.
+    assert nodes[0]["node_id"] == "!aabbccdd"
+
+
+def test_mesh_nodes_falls_back_to_node_id_when_unnamed(client_module):
+    module, client = client_module
+    module._state["meshtastic_data"] = _FakeMeshtasticData(
+        nodes={"!aabbccdd": {}},
+        local_node_id=None,
+    )
+    resp = client.get("/mesh-nodes")
+    nodes = resp.json()["nodes"]
+    assert nodes[0]["long_name"] == "!aabbccdd"
+    assert nodes[0]["short_name"] == "ccdd"
 
 
 # --- /config ---

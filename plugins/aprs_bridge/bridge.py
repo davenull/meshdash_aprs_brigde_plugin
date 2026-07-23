@@ -16,7 +16,9 @@ from . import registry
 
 class RfToMeshBridge:
     """RF -> mesh. Delivers APRS messages addressed to a registered
-    callsign to that callsign's mapped Meshtastic node, and sends an RF
+    callsign to every Meshtastic node registered under that callsign (an
+    operator may register more than one device to the same callsign; a
+    device itself still maps to exactly one callsign), and sends an RF
     ACK back over the TNC if the message carried a message number. Also
     the RX side of the mesh->RF ACK loop: an incoming APRS message
     addressed to our own gateway callsign that decodes as "ackNNN" clears
@@ -91,8 +93,8 @@ class RfToMeshBridge:
             # below instead of silently dropping a real message just
             # because its addressee string matches our own.
 
-        node_id = registry.lookup_node_for_callsign(self._registry_conn, message.addressee)
-        if node_id is None:
+        node_ids = registry.lookup_nodes_for_callsign(self._registry_conn, message.addressee)
+        if not node_ids:
             self._logger.info(
                 "aprs_bridge: dropping APRS message for unregistered callsign %r", message.addressee
             )
@@ -131,10 +133,15 @@ class RfToMeshBridge:
 
         self._dedupe.mark(signature)
         self._logger.info(
-            "aprs_bridge: RF->mesh %s -> %s (node %s): %r",
-            frame.source, message.addressee, node_id, message.text,
+            "aprs_bridge: RF->mesh %s -> %s (nodes %s): %r",
+            frame.source, message.addressee, ", ".join(node_ids), message.text,
         )
-        asyncio.run_coroutine_threadsafe(self._deliver(node_id, message.text), self._loop)
+        # A callsign may have several registered devices (e.g. an
+        # operator running more than one mesh node); one incoming RF
+        # message counts as one rate-limited/acked event regardless, and
+        # fans out to every device registered under that callsign.
+        for node_id in node_ids:
+            asyncio.run_coroutine_threadsafe(self._deliver(node_id, message.text), self._loop)
 
         if message.msgno is not None:
             self._send_ack(frame.source, message.msgno)

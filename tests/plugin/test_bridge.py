@@ -88,6 +88,27 @@ def _build_rf_frame(addressee: str, text: str, msgno=None, source="N0CALL-10") -
     return ax25_frame
 
 
+def test_message_delivered_to_every_device_registered_under_the_callsign(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # An operator running more than one mesh node can register all of
+    # them under the same callsign; an incoming RF message for that
+    # callsign should reach every one of their devices.
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
+    registry.add_registration(conn, "W4BRD-13", "!11111111")
+    registry.add_registration(conn, "W4BRD-13", "!22222222")
+
+    frame = _build_rf_frame("W4BRD-13", "Testing", msgno="003")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 2)
+    destinations = {s["destinationId"] for s in fake_connection_manager.sent}
+    assert destinations == {"!11111111", "!22222222"}
+    assert all(s["text"] == "Testing" for s in fake_connection_manager.sent)
+    # Still exactly one ack, not one per device -- it's one RF event.
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+
+
 def test_message_to_registered_callsign_is_delivered_to_mesh(
     tmp_path, fake_connection_manager, running_event_loop
 ):

@@ -119,12 +119,17 @@ tr:hover td{background:rgba(255,255,255,.02)}
             <input class="fi" id="reg-callsign" placeholder="W4BRD-13">
           </div>
           <div class="field">
-            <label>Mesh Node ID</label>
-            <input class="fi" id="reg-node-id" placeholder="!aabbccdd">
+            <label>Mesh Node</label>
+            <select class="fi" id="reg-node-id" style="min-width:220px"></select>
           </div>
+          <button class="btn" onclick="App.loadMeshNodes()" title="Refresh node list"><i class="fa-solid fa-rotate"></i></button>
           <button class="btn primary" onclick="App.addRegistration()">Add</button>
         </div>
-        <div class="section-title">Registered callsigns</div>
+        <div class="section-title">Registered devices</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--txt3);margin-bottom:8px">
+          One callsign may have several registered devices -- an incoming RF message for that
+          callsign is delivered to all of them.
+        </div>
         <table>
           <thead><tr><th>Callsign</th><th>Node ID</th><th>Registered</th><th></th></tr></thead>
           <tbody id="reg-rows"></tbody>
@@ -198,7 +203,7 @@ const App = {
     document.querySelectorAll('.mt').forEach(b => b.classList.toggle('on', b.dataset.view === name));
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'view-' + name));
     if (name === 'status') this.loadStatus();
-    if (name === 'registrations') this.loadRegistrations();
+    if (name === 'registrations') { this.loadRegistrations(); this.loadMeshNodes(); }
     if (name === 'config') this.loadConfig();
   },
 
@@ -252,7 +257,7 @@ const App = {
           <td>${reg.callsign}</td>
           <td>${reg.node_id}</td>
           <td>${timeAgo(reg.created_at)}</td>
-          <td><button class="btn danger" onclick="App.removeRegistration('${reg.callsign}')">Remove</button></td>
+          <td><button class="btn danger" onclick="App.removeRegistration('${reg.node_id}')">Remove</button></td>
         </tr>
       `).join('');
     } catch (e) {
@@ -260,11 +265,30 @@ const App = {
     }
   },
 
+  async loadMeshNodes() {
+    const sel = $('reg-node-id');
+    try {
+      const r = await fetch(`${API}/mesh-nodes`);
+      const d = await r.json();
+      const current = sel.value;
+      if (!d.nodes.length) {
+        sel.innerHTML = '<option value="">No mesh nodes heard yet</option>';
+        return;
+      }
+      sel.innerHTML = d.nodes.map(n =>
+        `<option value="${n.node_id}">${n.long_name} (${n.node_id})</option>`
+      ).join('');
+      if (current && d.nodes.some(n => n.node_id === current)) sel.value = current;
+    } catch (e) {
+      sel.innerHTML = '<option value="">Failed to load nodes</option>';
+    }
+  },
+
   async addRegistration() {
     const callsign = $('reg-callsign').value.trim();
     const nodeId = $('reg-node-id').value.trim();
     if (!callsign || !nodeId) {
-      showBanner('reg-banner', 'err', 'Callsign and node ID are both required.');
+      showBanner('reg-banner', 'err', 'Callsign and mesh node are both required.');
       return;
     }
     try {
@@ -274,22 +298,21 @@ const App = {
         body: JSON.stringify({callsign, node_id: nodeId}),
       });
       if (!r.ok) throw new Error(await r.text());
-      showBanner('reg-banner', 'ok', `Registered ${callsign}.`);
+      showBanner('reg-banner', 'ok', `Registered ${callsign} -> ${nodeId}.`);
       $('reg-callsign').value = '';
-      $('reg-node-id').value = '';
       await this.loadRegistrations();
     } catch (e) {
       showBanner('reg-banner', 'err', 'Failed: ' + e.message);
     }
   },
 
-  async removeRegistration(callsign) {
+  async removeRegistration(nodeId) {
     try {
-      const r = await fetch(`${API}/registrations/${encodeURIComponent(callsign)}`, {
+      const r = await fetch(`${API}/registrations/by-node/${encodeURIComponent(nodeId)}`, {
         method: 'DELETE', credentials: 'include',
       });
       if (!r.ok) throw new Error(await r.text());
-      showBanner('reg-banner', 'ok', `Removed ${callsign}.`);
+      showBanner('reg-banner', 'ok', `Removed ${nodeId}.`);
       await this.loadRegistrations();
     } catch (e) {
       showBanner('reg-banner', 'err', 'Failed: ' + e.message);

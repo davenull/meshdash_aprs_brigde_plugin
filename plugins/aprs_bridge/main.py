@@ -252,6 +252,7 @@ def _bootstrap(context: dict) -> None:
     _state["mesh_bridge"] = mesh_bridge
     _state["dedupe"] = dedupe
     _state["ack_tracker"] = ack_tracker
+    _state["meshtastic_data"] = meshtastic_data
     logger.info("aprs_bridge: bridge started (TNC %s:%d)", cfg.tnc_host, cfg.tnc_port)
 
 
@@ -327,6 +328,38 @@ async def get_status():
     }
 
 
+def _known_mesh_nodes() -> list:
+    meshtastic_data = _state.get("meshtastic_data")
+    if meshtastic_data is None:
+        return []
+    local_id = getattr(meshtastic_data, "local_node_id", None)
+    nodes = getattr(meshtastic_data, "nodes", {}) or {}
+    out = []
+    for node_id, nd in nodes.items():
+        if node_id == local_id:
+            continue  # the gateway's own radio isn't a registerable mesh user
+        user = (nd.get("user") or {}) if isinstance(nd, dict) else {}
+        long_name = user.get("longName") or nd.get("long_name") or node_id
+        short_name = user.get("shortName") or nd.get("short_name") or node_id[-4:]
+        out.append({
+            "node_id": node_id,
+            "long_name": long_name,
+            "short_name": short_name,
+            "last_heard": nd.get("lastHeard") or nd.get("last_heard") or 0,
+        })
+    out.sort(key=lambda n: -(n["last_heard"] or 0))
+    return out
+
+
+@plugin_router.get("/mesh-nodes")
+async def list_mesh_nodes_endpoint():
+    """Powers the node picker on the registration form -- sourced fresh
+    from MeshDash's own live node list on every call, not cached, so a
+    just-heard-from device shows up without a page reload."""
+    nodes = await asyncio.to_thread(_known_mesh_nodes)
+    return {"nodes": nodes}
+
+
 @plugin_router.get("/registrations")
 async def list_registrations_endpoint():
     conn = _state.get("registry_conn")
@@ -359,13 +392,19 @@ async def add_registration_endpoint(req: RegistrationRequest):
     return {"status": "ok", "callsign": callsign, "node_id": node_id}
 
 
-@plugin_router.delete("/registrations/{callsign}")
-async def remove_registration_endpoint(callsign: str):
+@plugin_router.delete("/registrations/by-node/{node_id}")
+async def remove_registration_by_node_endpoint(node_id: str):
+    """Removes a single device's registration. A callsign can have
+    several registered devices, so removal is keyed by device (node_id),
+    not by callsign -- see registry.remove_registration for the
+    (separate, bulk) "remove every device under this callsign" action."""
     conn = _state.get("registry_conn")
     if conn is None:
         raise HTTPException(503, "bridge not ready yet")
-    await asyncio.to_thread(registry.remove_registration, conn, callsign)
-    return {"status": "ok"}
+    removed = await asyncio.to_thread(registry.remove_registration_by_node, conn, node_id)
+    if removed is None:
+        raise HTTPException(404, f"no registration found for node {node_id!r}")
+    return {"status": "ok", "callsign": removed, "node_id": node_id}
 
 
 def _read_raw_config() -> dict:

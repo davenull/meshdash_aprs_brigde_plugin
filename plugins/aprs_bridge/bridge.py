@@ -14,8 +14,6 @@ from .protocol.errors import ProtocolError
 from .protocol.ratelimit import RateLimiter
 from . import registry
 
-_FANOUT_DELAY_SEC = 0.5  # gap between sequential deliveries to multiple devices.
-
 
 class RfToMeshBridge:
     """RF -> mesh. Three ways an incoming APRS message gets routed to a
@@ -65,10 +63,13 @@ class RfToMeshBridge:
     on_ax25_frame(); mesh delivery is scheduled onto the MeshDash event
     loop since connection_manager.sendText is a coroutine. When more
     than one device is targeted (fan-out or "!ALL"), deliveries are
-    sequenced one at a time with a short gap (_deliver_to_all,
-    _FANOUT_DELAY_SEC) rather than fired concurrently -- confirmed live
-    that concurrent sendText calls to different destinations can race
-    and silently drop one of them, under clean RF with nothing else to
+    sequenced one at a time with a gap between them
+    (_deliver_to_all, cfg.mesh_fanout_delay_sec) rather than fired
+    concurrently -- confirmed live that concurrent sendText calls to
+    different destinations can race and silently drop one of them, and
+    that too short a gap can still silently drop a later delivery even
+    when sequenced (the earlier send's own ack-wait/retry cycle appears
+    to still occupy the radio), under clean RF with nothing else to
     blame.
 
     A duplicate/retried receipt of an already-delivered message (a
@@ -299,11 +300,15 @@ class RfToMeshBridge:
         # conditions with nothing else to blame. Sequencing them removes
         # that race regardless of what's happening inside
         # connection_manager/the local radio's send queue; the pacing gap
-        # additionally avoids stacking sends faster than the one physical
-        # radio link can actually clear them.
+        # (cfg.mesh_fanout_delay_sec) additionally avoids stacking sends
+        # faster than the one physical radio link can actually clear
+        # them -- confirmed live that even a sequenced-but-too-short gap
+        # (0.5s) could still silently drop a later delivery, apparently
+        # because the earlier send's own ack-wait/retry cycle was still
+        # occupying the radio.
         for i, node_id in enumerate(node_ids):
             if i > 0:
-                await asyncio.sleep(_FANOUT_DELAY_SEC)
+                await asyncio.sleep(self._cfg.mesh_fanout_delay_sec)
             await self._deliver(node_id, text)
 
     async def _deliver(self, node_id: str, text: str) -> None:

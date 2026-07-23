@@ -77,6 +77,7 @@ See [`docs/RESEARCH.md`](docs/RESEARCH.md) for the full protocol/architecture re
 | `per_callsign_rate_limit_per_min` / `per_callsign_rate_limit_burst` | Per-sender token-bucket rate limit. | `6` / `3` |
 | `ack_retry_intervals_sec` | Decaying retransmit schedule for un-ACKed outbound messages. | `[30, 60, 120]` |
 | `ack_max_attempts` | Attempts before giving up on a message. | `4` |
+| `mesh_fanout_delay_sec` | Gap between sequential RF→mesh deliveries when a message reaches more than one device at once (multi-device callsign, `!ALL`). Too short a value can silently drop a later delivery even though nothing errors — tune it up if that happens on your hardware. | `2.0` |
 
 Configuration can also be viewed and edited from the web UI's Config tab; changes there are written back to `config.json` and take effect on the bridge's next restart.
 

@@ -28,6 +28,7 @@ class BridgeConfig:
     per_callsign_rate_limit_burst: float
     ack_retry_intervals_sec: Tuple[float, ...]
     ack_max_attempts: int
+    mesh_fanout_delay_sec: float
 
 
 _REQUIRED_FIELDS = {"tnc_mode", "tnc_host", "tnc_port", "gateway_callsign"}
@@ -91,4 +92,14 @@ def load_config(path: str) -> BridgeConfig:
         per_callsign_rate_limit_burst=float(raw.get("per_callsign_rate_limit_burst", 3.0)),
         ack_retry_intervals_sec=tuple(raw.get("ack_retry_intervals_sec", [30, 60, 120])),
         ack_max_attempts=ack_max_attempts,
+        # Gap between sequential RF->mesh deliveries when more than one
+        # device is targeted (fan-out / "!ALL"). Confirmed live that a
+        # too-short gap (originally a hardcoded 0.5s) let a second
+        # delivery silently fail to reach its device even with
+        # sendText(wantAck=True) requesting Meshtastic's own delivery
+        # confirmation -- the first send's ack-wait/retry cycle appears
+        # to still be occupying the radio when the second one goes out
+        # too soon after it. Configurable since the right value is a
+        # property of the radio/mesh, not something to hardcode.
+        mesh_fanout_delay_sec=float(raw.get("mesh_fanout_delay_sec", 2.0)),
     )

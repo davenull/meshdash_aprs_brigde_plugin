@@ -13,5 +13,6 @@
     "per_callsign_rate_limit_per_min": 6,
     "per_callsign_rate_limit_burst": 3,
     "ack_retry_intervals_sec": [30, 60, 120],
-    "ack_max_attempts": 4
+    "ack_max_attempts": 4,
+    "mesh_fanout_delay_sec": 2.0
 }

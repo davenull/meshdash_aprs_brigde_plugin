@@ -83,6 +83,7 @@ def test_valid_minimal_config_applies_defaults(tmp_path):
     assert cfg.per_callsign_rate_limit_burst == 3.0
     assert cfg.ack_retry_intervals_sec == (30, 60, 120)
     assert cfg.ack_max_attempts == 4
+    assert cfg.mesh_fanout_delay_sec == 2.0
 
 
 def test_ack_max_attempts_below_one_raises(tmp_path):
@@ -120,6 +121,7 @@ def test_full_config_overrides_all_defaults(tmp_path):
             "per_callsign_rate_limit_burst": 5,
             "ack_retry_intervals_sec": [10, 20],
             "ack_max_attempts": 2,
+            "mesh_fanout_delay_sec": 5.0,
         },
     )
     cfg = load_config(path)
@@ -138,3 +140,4 @@ def test_full_config_overrides_all_defaults(tmp_path):
     assert cfg.per_callsign_rate_limit_burst == 5
     assert cfg.ack_retry_intervals_sec == (10, 20)
     assert cfg.ack_max_attempts == 2
+    assert cfg.mesh_fanout_delay_sec == 5.0

@@ -304,6 +304,7 @@ class ConfigUpdateRequest(BaseModel):
     per_callsign_rate_limit_burst: float = 3.0
     ack_retry_intervals_sec: List[float] = Field(default_factory=lambda: [30.0, 60.0, 120.0])
     ack_max_attempts: int = 4
+    mesh_fanout_delay_sec: float = 2.0
 
 
 @plugin_router.get("/status")

@@ -47,6 +47,7 @@ def _make_config(**overrides):
         per_callsign_rate_limit_burst=3.0,
         ack_retry_intervals_sec=(30.0, 60.0, 120.0),
         ack_max_attempts=4,
+        mesh_fanout_delay_sec=0.05,  # tiny in tests; production default is 2.0s
     )
     defaults.update(overrides)
     return BridgeConfig(**defaults)

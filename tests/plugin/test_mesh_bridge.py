@@ -45,7 +45,7 @@ def _make_config(**overrides):
     return BridgeConfig(**defaults)
 
 
-def _make_bridge(tmp_path, fake_connection_manager, running_event_loop, **cfg_overrides):
+def _make_bridge(tmp_path, fake_connection_manager, running_event_loop, mesh_nodes=None, **cfg_overrides):
     conn = registry.init_db(str(tmp_path / "reg.db"))
     cfg = _make_config(registry_db_path=str(tmp_path / "reg.db"), **cfg_overrides)
     sent_rf_frames = []
@@ -54,7 +54,7 @@ def _make_bridge(tmp_path, fake_connection_manager, running_event_loop, **cfg_ov
         sent_rf_frames.append(data)
         return True
 
-    meshtastic_data = SimpleNamespace(local_node_id=LOCAL_ID)
+    meshtastic_data = SimpleNamespace(nodes=mesh_nodes or {}, local_node_id=LOCAL_ID)
     dedupe = DedupeCache(ttl_seconds=cfg.dedupe_ttl_sec)
     ack_tracker = AckTracker(
         transport_send=transport_send,
@@ -158,15 +158,59 @@ def test_unregister_command_when_not_registered(
     assert "no active registration" in fake_connection_manager.sent[0]["text"]
 
 
-def test_unregistered_sender_cannot_reach_rf(tmp_path, fake_connection_manager, running_event_loop):
+def test_unregistered_sender_reaches_rf_attributed_by_mesh_name(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # Third-party relay model (FCC Part 97.115): an unregistered/
+    # unlicensed mesh sender can still reach RF -- the gateway's own
+    # licensed callsign remains the sole AX.25 source, and the sender is
+    # identified by their mesh short name rather than a claimed callsign.
+    bridge, _conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!node0001": {"user": {"longName": "David's Pager", "shortName": "PGR"}}},
+    )
+
+    bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: hello", channel=2))
+
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+    _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
+    parsed = ax25.parse_ui_frame(ax25_bytes)
+    assert parsed.source == "W4BRD-13"  # gateway callsign, unchanged
+    message = aprs_message.decode_message(parsed.info)
+    assert message.addressee == "WU2Z"
+    assert message.text == "via PGR: hello"
+
+
+def test_unregistered_sender_falls_back_to_node_id_when_unnamed(
+    tmp_path, fake_connection_manager, running_event_loop
+):
     bridge, _conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
 
     bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: hello", channel=2))
 
-    time.sleep(0.2)
-    assert sent_rf_frames == []
-    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
-    assert "Not registered" in fake_connection_manager.sent[0]["text"]
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+    _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
+    parsed = ax25.parse_ui_frame(ax25_bytes)
+    message = aprs_message.decode_message(parsed.info)
+    assert message.text == "via 0001: hello"  # last 4 chars of the node id
+
+
+def test_registered_sender_still_uses_real_callsign_not_mesh_name(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!node0001": {"user": {"shortName": "PGR"}}},
+    )
+    registry.add_registration(conn, "W4BRD-13", "!node0001")
+
+    bridge.on_mesh_packet(_dm_packet("!node0001", "WU2Z: hello", channel=2))
+
+    assert _wait_until(lambda: len(sent_rf_frames) == 1)
+    _port, _cmd, ax25_bytes = kiss.decode_frame(sent_rf_frames[0])
+    parsed = ax25.parse_ui_frame(ax25_bytes)
+    message = aprs_message.decode_message(parsed.info)
+    assert message.text == "W4BRD-13: hello"  # real callsign, not "via PGR"
 
 
 def test_registered_sender_with_explicit_addressee_reaches_rf(

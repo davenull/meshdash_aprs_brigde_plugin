@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from typing import Callable
+from typing import Callable, Optional
 
 from .ack_tracker import AckTracker
 from .config import BridgeConfig
@@ -18,11 +18,16 @@ class RfToMeshBridge:
     """RF -> mesh. Delivers APRS messages addressed to a registered
     callsign to every Meshtastic node registered under that callsign (an
     operator may register more than one device to the same callsign; a
-    device itself still maps to exactly one callsign), and sends an RF
-    ACK back over the TNC if the message carried a message number. Also
-    the RX side of the mesh->RF ACK loop: an incoming APRS message
-    addressed to our own gateway callsign that decodes as "ackNNN" clears
-    the matching pending send in ack_tracker instead of being treated as
+    device itself still maps to exactly one callsign). If the addressee
+    isn't a registered callsign, also tries matching it against a live
+    mesh node's short name -- this lets an RF sender reach an unlicensed
+    mesh user directly (third-party relay; see mesh_bridge.py's
+    docstring for the compliance model), the same way an unregistered
+    mesh sender can still reach RF. Sends an RF ACK back over the TNC if
+    the message carried a message number. Also the RX side of the
+    mesh->RF ACK loop: an incoming APRS message addressed to our own
+    gateway callsign that decodes as "ackNNN" clears the matching
+    pending send in ack_tracker instead of being treated as
     mesh-deliverable traffic. Runs on the TNC RX thread via
     on_ax25_frame(); mesh delivery is scheduled onto the MeshDash event
     loop since connection_manager.sendText is a coroutine.
@@ -38,6 +43,7 @@ class RfToMeshBridge:
         cfg: BridgeConfig,
         registry_conn: sqlite3.Connection,
         connection_manager,
+        meshtastic_data,
         event_loop: asyncio.AbstractEventLoop,
         logger: logging.Logger,
         transport_send: Callable[[bytes], bool],
@@ -48,12 +54,23 @@ class RfToMeshBridge:
         self._cfg = cfg
         self._registry_conn = registry_conn
         self._cm = connection_manager
+        self._meshtastic_data = meshtastic_data
         self._loop = event_loop
         self._logger = logger
         self._transport_send = transport_send
         self._dedupe = dedupe
         self._ack_tracker = ack_tracker
         self._rate_limiter = rate_limiter
+
+    def _lookup_node_by_short_name(self, name: str) -> Optional[str]:
+        nodes = getattr(self._meshtastic_data, "nodes", {}) or {}
+        name_upper = name.strip().upper()
+        for node_id, nd in nodes.items():
+            user = (nd.get("user") or {}) if isinstance(nd, dict) else {}
+            short_name = user.get("shortName") or nd.get("short_name") or ""
+            if short_name.strip().upper() == name_upper:
+                return node_id
+        return None
 
     def on_ax25_frame(self, ax25_bytes: bytes) -> None:
         try:
@@ -95,8 +112,17 @@ class RfToMeshBridge:
 
         node_ids = registry.lookup_nodes_for_callsign(self._registry_conn, message.addressee)
         if not node_ids:
+            # Not a registered callsign -- also allow reaching a mesh
+            # node directly by its live short name, so an RF sender can
+            # message an unlicensed mesh user too (third-party relay;
+            # gateway_callsign remains the sole RF transmission
+            # attribution regardless of who receives).
+            matched_node = self._lookup_node_by_short_name(message.addressee)
+            node_ids = [matched_node] if matched_node else []
+
+        if not node_ids:
             self._logger.info(
-                "aprs_bridge: dropping APRS message for unregistered callsign %r", message.addressee
+                "aprs_bridge: dropping APRS message for unknown callsign/node name %r", message.addressee
             )
             return
 

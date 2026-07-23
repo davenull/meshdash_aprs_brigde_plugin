@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from types import SimpleNamespace
 
 from aprs_bridge import registry
 from aprs_bridge.ack_tracker import AckTracker
@@ -44,11 +45,17 @@ def _make_config(**overrides):
 
 
 def _make_bridge(
-    tmp_path, fake_connection_manager, running_event_loop, sent_rf_frames=None, **cfg_overrides
+    tmp_path,
+    fake_connection_manager,
+    running_event_loop,
+    sent_rf_frames=None,
+    mesh_nodes=None,
+    **cfg_overrides,
 ):
     conn = registry.init_db(str(tmp_path / "reg.db"))
     cfg = _make_config(registry_db_path=str(tmp_path / "reg.db"), **cfg_overrides)
     sent_rf_frames = sent_rf_frames if sent_rf_frames is not None else []
+    meshtastic_data = SimpleNamespace(nodes=mesh_nodes or {}, local_node_id=None)
 
     def transport_send(data: bytes) -> bool:
         sent_rf_frames.append(data)
@@ -72,6 +79,7 @@ def _make_bridge(
         cfg=cfg,
         registry_conn=conn,
         connection_manager=fake_connection_manager,
+        meshtastic_data=meshtastic_data,
         event_loop=running_event_loop,
         logger=logging.getLogger("test.bridge"),
         transport_send=transport_send,
@@ -128,6 +136,8 @@ def test_message_to_registered_callsign_is_delivered_to_mesh(
 def test_message_to_unregistered_callsign_is_dropped(
     tmp_path, fake_connection_manager, running_event_loop
 ):
+    # Addressee matches neither a registered callsign nor (with no mesh
+    # nodes configured here) any live node's short name -- dropped either way.
     bridge, _conn, sent_rf_frames, _ack_tracker = _make_bridge(tmp_path, fake_connection_manager, running_event_loop)
 
     frame = _build_rf_frame("NOBODY", "hi there")
@@ -400,3 +410,41 @@ def test_rate_limit_exceeded_drops_delivery(tmp_path, fake_connection_manager, r
     bridge.on_ax25_frame(_build_rf_frame("WU2Z", "second", source="N0CALL-2"))
     time.sleep(0.2)
     assert len(fake_connection_manager.sent) == 1  # second delivery rate-limited
+
+
+def test_message_reaches_mesh_node_by_short_name_when_not_a_registered_callsign(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # Third-party relay model: an RF sender can reach an unlicensed mesh
+    # user directly by their mesh short name, not just a registered
+    # callsign -- the gateway callsign is unaffected either way.
+    bridge, _conn, _sent, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!aabbccdd": {"user": {"shortName": "PGR"}}},
+    )
+
+    frame = _build_rf_frame("PGR", "hello there")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    sent = fake_connection_manager.sent[0]
+    assert sent["destinationId"] == "!aabbccdd"
+    assert sent["text"] == "hello there"
+
+
+def test_registered_callsign_takes_priority_over_short_name_match(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    bridge, conn, _sent, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop,
+        mesh_nodes={"!zzzzzzzz": {"user": {"shortName": "WU2Z"}}},  # coincidental name collision
+    )
+    registry.add_registration(conn, "WU2Z", "!aabbccdd")
+
+    frame = _build_rf_frame("WU2Z", "hello")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 1)
+    assert fake_connection_manager.sent[0]["destinationId"] == "!aabbccdd"  # registered node, not the name match
+
+

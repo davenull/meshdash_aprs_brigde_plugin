@@ -20,12 +20,21 @@ _MAX_OUTBOUND_TEXT = 67  # APRS message text limit; enforced again defensively h
 class MeshToRfBridge:
     """Mesh -> RF. Handles !register/!unregister DM commands (no RF
     involved) and forwards CALLSIGN: prefixed (or last-correspondent)
-    DMs from registered mesh nodes out over RF as APRS messages, tracked
-    for ACK/retransmit via ack_tracker.
+    DMs out over RF as APRS messages, tracked for ACK/retransmit via
+    ack_tracker.
 
-    Hard invariants enforced here (see CLAUDE.md):
-    - Only a sender with a current registration may reach RF. No
-      registration -> no transmission, ever.
+    Compliance model (see CLAUDE.md -- this is the FCC Part 97.115
+    third-party-traffic model, not a claim that every mesh sender holds
+    a license):
+    - The AX.25 source on every outbound frame is always the gateway's
+      own licensed callsign, regardless of who originated the mesh-side
+      content. That's the sole point of RF transmission accountability,
+      unaffected by anything below.
+    - A mesh sender who has !register'd a real callsign gets that
+      callsign embedded as attribution in the outgoing message text
+      ("user callsign in the payload path"). Anyone else is still
+      relayed -- identified instead by their mesh node's short name/ID,
+      never claiming a license they haven't verified.
     - Only genuine direct messages addressed to the gateway node reach
       this far at all (_handle_packet returns early on anything else) --
       broadcast/channel content, encrypted-default-channel included, is
@@ -34,9 +43,6 @@ class MeshToRfBridge:
       Meshtastic DMs don't carry usable channel-encryption metadata (a DM
       sent from a non-default channel context was still tagged channel 0),
       so a channel allowlist can't discriminate anything for DMs.
-    - The AX.25 source on every outbound frame is the gateway's own
-      callsign; the registered operator's callsign is embedded in the
-      message text for attribution ("user callsign in the payload path").
     """
 
     def __init__(
@@ -125,24 +131,31 @@ class MeshToRfBridge:
                 self._reply(from_id, f"Unregistered {removed}.")
             return
 
-        # Everything from here on can reach RF, so the registration
-        # invariant applies -- this is the DM path's real (and only
-        # remaining) RF gate.
+        # Third-party relay model: a !register'd sender is identified by
+        # their real callsign; anyone else is still relayed, identified
+        # instead by their mesh node's short name (never claiming a
+        # license they haven't verified). Either way identity_key is a
+        # stable per-sender string used for rate-limiting and
+        # last-correspondent tracking -- it doesn't need to be a real
+        # callsign to serve that purpose.
         sender_callsign = registry.lookup_callsign_for_node(self._registry_conn, from_id)
-        if sender_callsign is None:
-            self._reply(from_id, "Not registered. DM '!register CALLSIGN-SSID' first.")
-            return
+        if sender_callsign is not None:
+            identity_key = sender_callsign
+            attribution = sender_callsign
+        else:
+            identity_key = from_id
+            attribution = f"via {self._mesh_short_name(from_id)}"
 
-        if not self._rate_limiter.allow(sender_callsign):
+        if not self._rate_limiter.allow(identity_key):
             self._logger.warning(
-                "aprs_bridge: rate limit exceeded for %s; dropping mesh->RF request", sender_callsign
+                "aprs_bridge: rate limit exceeded for %s; dropping mesh->RF request", identity_key
             )
             self._reply(from_id, "Rate limit exceeded; message not sent. Try again shortly.")
             return
 
         addressee, message_text = commands.parse_outbound_request(text)
         if addressee is None:
-            addressee = registry.get_last_correspondent(self._registry_conn, sender_callsign)
+            addressee = registry.get_last_correspondent(self._registry_conn, identity_key)
         if addressee is None:
             self._reply(
                 from_id,
@@ -150,12 +163,22 @@ class MeshToRfBridge:
             )
             return
 
-        self._send_to_rf(from_id, sender_callsign, addressee, message_text)
-        registry.set_last_correspondent(self._registry_conn, sender_callsign, addressee)
+        self._send_to_rf(from_id, attribution, addressee, message_text)
+        registry.set_last_correspondent(self._registry_conn, identity_key, addressee)
 
-    def _send_to_rf(self, from_id: str, sender_callsign: str, addressee: str, message_text: str) -> None:
+    def _mesh_short_name(self, node_id: str) -> str:
+        nodes = getattr(self._meshtastic_data, "nodes", {}) or {}
+        nd = nodes.get(node_id) or {}
+        user = (nd.get("user") or {}) if isinstance(nd, dict) else {}
+        return (
+            user.get("shortName")
+            or nd.get("short_name")
+            or (node_id[-4:] if node_id else node_id)
+        )
+
+    def _send_to_rf(self, from_id: str, attribution: str, addressee: str, message_text: str) -> None:
         msgno = self._msgno_generator.next()
-        prefix = f"{sender_callsign}: "
+        prefix = f"{attribution}: "
         # Reserve room for the trailing "{msgno" (1 + up to 5 chars) the
         # same way encode_message will append it, so the combined field
         # never exceeds the 67-char APRS message text limit.
@@ -163,8 +186,8 @@ class MeshToRfBridge:
         available = _MAX_OUTBOUND_TEXT - len(prefix) - suffix_len
         if available <= 0:
             self._logger.warning(
-                "aprs_bridge: sender callsign %r alone leaves no room for message text",
-                sender_callsign,
+                "aprs_bridge: attribution %r alone leaves no room for message text",
+                attribution,
             )
             return
         text = prefix + message_text[:available]
@@ -182,7 +205,7 @@ class MeshToRfBridge:
         if self._transport_send(kiss_frame):
             self._logger.info(
                 "aprs_bridge: mesh->RF %s -> %s (msg %s): %r",
-                sender_callsign, addressee, msgno, message_text,
+                attribution, addressee, msgno, message_text,
             )
             self._ack_tracker.track(msgno, addressee, kiss_frame, from_id)
             # Mark our own transmission's signature so a TNC echo /

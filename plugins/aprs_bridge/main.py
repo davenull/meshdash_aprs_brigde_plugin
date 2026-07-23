@@ -202,6 +202,7 @@ def _bootstrap(context: dict) -> None:
         cfg=cfg,
         registry_conn=registry_conn,
         connection_manager=cm,
+        meshtastic_data=meshtastic_data,
         event_loop=loop,
         logger=logger,
         transport_send=_transport_send,

@@ -75,12 +75,13 @@ def _make_wired_bridges(tmp_path, fake_connection_manager, running_event_loop, n
         on_exhausted=on_exhausted,
     )
     msgno_generator = MsgnoGenerator()
-    meshtastic_data = SimpleNamespace(local_node_id=LOCAL_ID)
+    meshtastic_data = SimpleNamespace(nodes={}, local_node_id=LOCAL_ID)
 
     rf_to_mesh = RfToMeshBridge(
         cfg=cfg,
         registry_conn=conn,
         connection_manager=fake_connection_manager,
+        meshtastic_data=meshtastic_data,
         event_loop=running_event_loop,
         logger=logging.getLogger("test.integration.rf_to_mesh"),
         transport_send=transport_send,

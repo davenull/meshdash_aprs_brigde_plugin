@@ -8,3 +8,6 @@ __pycache__/
 # Plugin runtime state (setup.py sentinel, registration DB) -- not source.
 plugins/aprs_bridge/.setup_complete
 plugins/aprs_bridge/registrations.db
+
+# Claude Code harness session state -- not project content.
+.claude/

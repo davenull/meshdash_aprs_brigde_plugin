@@ -167,6 +167,30 @@ def test_all_prefix_is_a_no_op_for_a_single_registered_device(
     assert sent["text"] == "N0CALL-10: hello"
 
 
+def test_all_prefix_overrides_conversation_history_when_addressed_to_gateway_callsign(
+    tmp_path, fake_connection_manager, running_event_loop
+):
+    # Regression guard for real usage: an operator testing under their
+    # own callsign registers devices under the same callsign as the
+    # gateway itself. A prior conversation with one specific device
+    # must not silently swallow a later "!ALL" and route to just that
+    # one device -- conversation history names a single node, which
+    # directly contradicts a request to reach everyone.
+    bridge, conn, _sent_rf_frames, _ack_tracker = _make_bridge(
+        tmp_path, fake_connection_manager, running_event_loop
+    )
+    registry.add_registration(conn, "W4BRD-13", "!11111111")  # same callsign as gateway_callsign
+    registry.add_registration(conn, "W4BRD-13", "!22222222")
+    registry.set_conversation_node(conn, "N0CALL-10", "!11111111")  # prior 1:1 conversation
+
+    frame = _build_rf_frame("W4BRD-13", "!ALL test", msgno="003", source="N0CALL-10")
+    bridge.on_ax25_frame(frame)
+
+    assert _wait_until(lambda: len(fake_connection_manager.sent) == 2)
+    destinations = {s["destinationId"] for s in fake_connection_manager.sent}
+    assert destinations == {"!11111111", "!22222222"}
+
+
 def test_message_falls_back_to_fan_out_when_last_active_device_unregistered(
     tmp_path, fake_connection_manager, running_event_loop
 ):

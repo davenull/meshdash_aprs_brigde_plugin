@@ -168,12 +168,20 @@ class RfToMeshBridge:
             # who the original mesh sender was -- this is what lets a
             # reply reach an unregistered/unlicensed sender, who has no
             # callsign of their own for an RF correspondent to address.
-            conversation_node = registry.get_conversation_node(self._registry_conn, frame.source)
-            if conversation_node is not None:
-                node_ids = [conversation_node]
-            # No conversation on record: fall through below, which also
-            # covers gateway_callsign coincidentally being a registered
-            # mesh user's callsign in its own right.
+            # Skipped entirely for "!ALL": conversation history always
+            # names a single node, which directly contradicts a request
+            # to reach every device -- this matters whenever
+            # gateway_callsign is itself also a registered callsign
+            # (e.g. testing under one's own callsign), since without this
+            # check a prior conversation would silently override "!ALL"
+            # before the registered-callsign fan-out logic below ever runs.
+            if not is_broadcast:
+                conversation_node = registry.get_conversation_node(self._registry_conn, frame.source)
+                if conversation_node is not None:
+                    node_ids = [conversation_node]
+            # No conversation on record (or broadcasting): fall through
+            # below, which also covers gateway_callsign coincidentally
+            # being a registered mesh user's callsign in its own right.
 
         if not node_ids:
             node_ids = registry.lookup_nodes_for_callsign(self._registry_conn, message.addressee)
